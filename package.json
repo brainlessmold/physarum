@@ -1,0 +1,37 @@
+{
+  "name": "physarum-mold",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A brainless single cell that computes shortest paths and designs networks. Tero et al., Science 2010.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brainlessmold/physarum.git"
+  },
+  "keywords": [
+    "physarum",
+    "slime-mold",
+    "shortest-path",
+    "network-design",
+    "tero-2010",
+    "robinhood-chain"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types test/solver.test.ts && node --experimental-strip-types test/network.test.ts"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
