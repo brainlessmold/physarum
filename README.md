@@ -3,6 +3,13 @@
 A model of the slime mold *Physarum polycephalum* — an organism without a single
 neuron that finds shortest paths and designs transport networks.
 
+![The network the model grows over 36 cities of the Kanto region around Tokyo](docs/tokyo.png)
+
+*Thirty-six cities, no map of Japan, no mention of Tokyo anywhere in the code.
+Food is placed on every city, two are picked at random each step, and a tube
+thickens in proportion to the flow it carried. What survives are the corridors
+the real railway was built along.*
+
 The whole organism fits in two equations:
 
 ```
@@ -41,24 +48,27 @@ src/core/dijkstra.ts  ordinary shortest path — used only as a control
 src/core/render.ts    canvas rendering
 src/core/pools.ts     pool graph: edge length equals swap cost
 src/data/kanto.ts     coordinates of cities around Tokyo
-src/screens/          four screens
+src/SimCanvas.tsx     the canvas component that runs a solver instance
+src/Site.tsx          the page
 test/                 two suites of checks
 ```
 
-## The screens
+## The page
+
+Everything runs client-side. Nothing is precomputed, fetched or replayed.
+
+**Live panel.** Food on all 36 Kanto cities, a random source-sink pair every
+step, the network settling into shape. This is the Science 2010 setup.
 
 **Maze.** Nature 2000: in a maze with food at both ends the mold withdraws from
 the dead ends and keeps the shortest path. Dijkstra's result on the same graph is
 shown next to it — the numbers have to match.
 
-**Tokyo.** Science 2010: food is laid out on the cities and the mold grows a
-network between them. The source-sink pair is redrawn on every step.
+**Pools.** The same solver on a graph of liquidity pools: nodes are tokens, edge
+length is the cost of a swap (fee plus slippage), so the shortest path is the
+cheapest route.
 
-**Pools.** The same thing on a graph of pools: nodes are tokens, edge length is
-the cost of a swap (fee plus slippage). The network the model converges on is the
-route.
-
-**What's real.** What can be verified and what cannot.
+**What is real, and what is not.** Two columns, stated before anyone asks.
 
 ## Two things implementations get wrong
 
@@ -79,6 +89,13 @@ That is what `pairsPerStep` is for — it averages several pairs per step, makin
 adaptation slower than the pair sampling, and the network stays connected.
 
 ## Checks
+
+![The maze, flooded then pruned to the shortest path](docs/maze.png)
+
+The same solver in a maze, left to right: every corridor open, the dead ends
+starving, one tube left. That last frame is checked against Dijkstra on the same
+graph — the two lengths have to agree, and twenty random mazes are checked on
+every run.
 
 ```
 npm test

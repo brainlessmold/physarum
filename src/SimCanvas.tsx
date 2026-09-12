@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Graph } from './core/graph.ts';
 import { Physarum, type SolverOptions } from './core/solver.ts';
-import { render, isDark, LIGHT, DARK, type RenderOptions } from './core/render.ts';
+import { render, PALETTE, type RenderOptions } from './core/render.ts';
 
 export interface SimStats {
   steps: number;
@@ -20,6 +20,10 @@ interface Props {
   aliveCut?: number;
   /** How many steps to run at once when the viewer has animations turned off. */
   staticSteps?: number;
+  /** Milliseconds between steps. Larger means a slower, more watchable run. */
+  stepInterval?: number;
+  /** Hold the fully flooded start state for this long, so the start is visible. */
+  holdMs?: number;
   onStats?: (s: SimStats) => void;
 }
 
@@ -31,22 +35,11 @@ export function SimCanvas({
   aspect = 0.52,
   aliveCut,
   staticSteps = 500,
+  stepInterval = 28,
+  holdMs = 0,
   onStats,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [dark, setDark] = useState(() => (typeof window === 'undefined' ? false : isDark()));
-
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const sync = () => setDark(isDark());
-    mq.addEventListener('change', sync);
-    const obs = new MutationObserver(sync);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => {
-      mq.removeEventListener('change', sync);
-      obs.disconnect();
-    };
-  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -61,8 +54,6 @@ export function SimCanvas({
     let height = 0;
     let dpr = 1;
 
-    const palette = dark ? DARK : LIGHT;
-
     const resize = () => {
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       width = canvas.clientWidth || 600;
@@ -72,11 +63,14 @@ export function SimCanvas({
       canvas.height = Math.round(height * dpr);
     };
 
+    const started = performance.now();
+
     const paint = () => {
       render(ctx, graph, width, height, dpr, {
-        palette,
+        palette: PALETTE,
         food,
         aliveCut,
+        time: (performance.now() - started) / 1000,
         ...renderOptions,
       });
     };
@@ -101,16 +95,25 @@ export function SimCanvas({
     } else {
       let last = 0;
       let sinceReport = 0;
+      let begun = 0;
+      // One relaxation before the first frame, so the flux is real from the
+      // outset and the flooded start state is not a flat picture.
+      mold.step();
+      paint();
+      report();
+
       const loop = (ts: number) => {
-        if (ts - last > 28) {
+        if (!begun) begun = ts;
+        const past = ts - begun > holdMs;
+        if (past && ts - last > stepInterval) {
           last = ts;
           mold.step();
-          paint();
-          if (++sinceReport >= 6) {
+          if (++sinceReport >= 4) {
             sinceReport = 0;
             report();
           }
         }
+        paint();
         raf = requestAnimationFrame(loop);
       };
       raf = requestAnimationFrame(loop);
@@ -121,7 +124,7 @@ export function SimCanvas({
       window.removeEventListener('resize', resize);
     };
     // the graph is recreated by the caller whenever a fresh run is needed
-  }, [graph, food, dark, aspect, aliveCut, staticSteps]);
+  }, [graph, food, aspect, aliveCut, staticSteps, stepInterval, holdMs]);
 
   return <canvas ref={canvasRef} className="sim-canvas" />;
 }

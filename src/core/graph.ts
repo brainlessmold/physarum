@@ -8,6 +8,8 @@
 export interface GraphNode {
   x: number;
   y: number;
+  /** Depth, for the three-dimensional panel. Absent means flat. */
+  z?: number;
   label?: string;
 }
 
@@ -40,7 +42,8 @@ export interface BuildOptions {
 function dist(a: GraphNode, b: GraphNode): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
-  return Math.hypot(dx, dy);
+  const dz = (a.z ?? 0) - (b.z ?? 0);
+  return Math.hypot(dx, dy, dz);
 }
 
 /** Builds a graph from nodes and a list of pairs. Lengths are euclidean. */

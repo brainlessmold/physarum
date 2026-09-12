@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" fill="#0a0b09"/>
+  <g fill="none" stroke="#eceade" stroke-linecap="round" stroke-linejoin="round">
+    <!-- trunk in from the left, then the fork: the one shape this organism always makes -->
+    <path d="M3 17 L13 17" stroke-width="7"/>
+    <path d="M13 17 L24 7" stroke-width="5"/>
+    <path d="M13 17 L24 26" stroke-width="4"/>
+    <path d="M18 12 L27 14" stroke-width="2"/>
+  </g>
+</svg>
