@@ -12,5 +12,9 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src", "test"]
+  // The app build typechecks the app. Tests run through node's own type
+  // stripping and use node globals (process.exit), which this config has no
+  // types for — including them here breaks `tsc --noEmit` and therefore the
+  // deploy. Type errors in tests still surface when they run.
+  "include": ["src"]
 }
