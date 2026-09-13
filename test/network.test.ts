@@ -125,11 +125,11 @@ console.log('\nPools: swap route search');
 
 const size = 10_000;
 const { graph: pg, tokens, indexOf } = buildPoolGraph(EXAMPLE_POOLS, { tradeSizeUsd: size });
-const route = shortestPath(pg, indexOf('USDC'), indexOf('MOLD'));
+const route = shortestPath(pg, indexOf('USDC'), indexOf('PHYSARUM'));
 
 const directPool = EXAMPLE_POOLS.find(
   (p) =>
-    (p.tokenA === 'USDC' && p.tokenB === 'MOLD') || (p.tokenA === 'MOLD' && p.tokenB === 'USDC'),
+    (p.tokenA === 'USDC' && p.tokenB === 'PHYSARUM') || (p.tokenA === 'PHYSARUM' && p.tokenB === 'USDC'),
 );
 
 check('all tokens collected', tokens.length > 0, tokens.join(', '));
@@ -140,17 +140,17 @@ check(
   `${(route.distance * 100).toFixed(2)}% on a $${size.toLocaleString('en-US')} trade`,
 );
 check(
-  'no direct USDC/MOLD pool, so the route is multi-hop',
+  'no direct USDC/PHYSARUM pool, so the route is multi-hop',
   !directPool && route.nodes.length > 2,
   `${route.nodes.length} nodes in the route`,
 );
 
-const moldPool = EXAMPLE_POOLS.find((p) => p.tokenB === 'MOLD' && p.tokenA === 'WETH')!;
+const physarumPool = EXAMPLE_POOLS.find((p) => p.tokenB === 'PHYSARUM' && p.tokenA === 'WETH')!;
 check(
   'cost grows with trade size',
-  poolCost(moldPool, { tradeSizeUsd: 100_000 }) > poolCost(moldPool, { tradeSizeUsd: 1_000 }),
-  `${(poolCost(moldPool, { tradeSizeUsd: 1_000 }) * 100).toFixed(2)}% → ${(
-    poolCost(moldPool, { tradeSizeUsd: 100_000 }) * 100
+  poolCost(physarumPool, { tradeSizeUsd: 100_000 }) > poolCost(physarumPool, { tradeSizeUsd: 1_000 }),
+  `${(poolCost(physarumPool, { tradeSizeUsd: 1_000 }) * 100).toFixed(2)}% → ${(
+    poolCost(physarumPool, { tradeSizeUsd: 100_000 }) * 100
   ).toFixed(2)}%`,
 );
 
@@ -158,7 +158,7 @@ check(
 
 console.log('\nPools: mold against Dijkstra on the same graph');
 
-const pmold = new Physarum(pg, [indexOf('USDC'), indexOf('MOLD')], { rng: mulberry32(11) });
+const pmold = new Physarum(pg, [indexOf('USDC'), indexOf('PHYSARUM')], { rng: mulberry32(11) });
 pmold.run(1200);
 const moldLen = pmold.networkLength(0.25);
 check(

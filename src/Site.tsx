@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { buildGraph, generateMaze, mazeEndpoints } from './core/graph.ts';
 import { shortestPath } from './core/dijkstra.ts';
 import { KANTO, project, nearestNeighbourEdges } from './data/kanto.ts';
-import { buildPoolGraph, EXAMPLE_POOLS, poolCost } from './core/pools.ts';
+import { buildPoolGraph, defaultEnds, EXAMPLE_POOLS, poolCost } from './core/pools.ts';
+import { fetchLivePools, toPools, type LiveSnapshot } from './core/chain.ts';
 import { SimCanvas, type SimStats } from './SimCanvas.tsx';
 import { Sim3D, type Sim3DStats } from './Sim3D.tsx';
 
 /** Replace once the token is deployed. */
 const CONTRACT: string | null = null;
-const TICKER = '$MOLD';
+/** Name and ticker are the same word, as everywhere else in this meta. */
+const NAME = 'Physarum';
+const TICKER = 'PHYSARUM';
 const REPO = 'https://github.com/brainlessmold/physarum';
 const HANDLE = 'https://x.com/brainlessmold';
 
@@ -250,21 +253,59 @@ function MazeLab() {
   );
 }
 
+type FeedState = 'loading' | 'live' | 'offline';
+
 function PoolsLab() {
   const [tradeSizeUsd, setTradeSize] = useState(10_000);
-  const [from, setFrom] = useState('USDC');
-  const [to, setTo] = useState('MOLD');
   const [stats, setStats] = useState<SimStats | null>(null);
+  const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null);
+  const [feed, setFeed] = useState<FeedState>('loading');
+  const [ends, setEnds] = useState<[string, string] | null>(null);
+
+  // Read the chain once, on mount. Until it answers the example graph is shown
+  // and labelled as an example; if it never answers, that label stays.
+  useEffect(() => {
+    let cancelled = false;
+    fetchLivePools({ perHubScan: 30, minUsd: 2_000, perHub: 4 })
+      .then((snap) => {
+        if (cancelled) return;
+        if (snap.pools.length < 2) {
+          setFeed('offline');
+          return;
+        }
+        setSnapshot(snap);
+        setFeed('live');
+        setEnds(null);
+      })
+      .catch(() => {
+        if (!cancelled) setFeed('offline');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pools = useMemo(
+    () => (snapshot ? toPools(snapshot) : EXAMPLE_POOLS),
+    [snapshot],
+  );
 
   const { graph, tokens, indexOf } = useMemo(
-    () => buildPoolGraph(EXAMPLE_POOLS, { tradeSizeUsd }),
-    [tradeSizeUsd],
+    () => buildPoolGraph(pools, { tradeSizeUsd }),
+    [pools, tradeSizeUsd],
   );
+
+  const fallback = useMemo(() => defaultEnds(pools), [pools]);
+  const from = ends && tokens.includes(ends[0]) ? ends[0] : fallback[0];
+  const to = ends && tokens.includes(ends[1]) ? ends[1] : fallback[1];
 
   const a = indexOf(from);
   const b = indexOf(to);
   const food = useMemo(() => (a >= 0 && b >= 0 && a !== b ? [a, b] : [0, 1]), [a, b]);
   const best = useMemo(() => shortestPath(graph, food[0], food[1]), [graph, food]);
+
+  const ethUsd = snapshot?.hubUsd['WETH'] ?? null;
+  const worst = Math.max(...pools.map((p) => poolCost(p, { tradeSizeUsd }) * 100));
 
   return (
     <div className="lab">
@@ -272,13 +313,40 @@ function PoolsLab() {
         <p>
           The same organism on a graph of liquidity pools. Nodes are tokens, edge length is what a
           swap through that pool actually costs — fee plus slippage. Shortest path is therefore the
-          cheapest route. The pool data below is an example, not live.
+          cheapest route.
+        </p>
+        <p className={`feed feed-${feed}`}>
+          {feed === 'live' && snapshot ? (
+            <>
+              <b>Live.</b> {snapshot.pools.length} Uniswap V2 pools, read from Robinhood Chain at
+              block {snapshot.blockNumber.toLocaleString('en-US')}. The factory's own PairCreated
+              events give every pool on each hub; the reserves, symbols and prices are then read
+              from the pools themselves over the public RPC — no indexer, no API key, no server of
+              ours in between. WETH at $
+              {ethUsd ? Math.round(ethUsd).toLocaleString('en-US') : '—'}, priced from the WETH/USDG
+              pool, and every other hub priced through that.
+            </>
+          ) : feed === 'loading' ? (
+            <>
+              <b>Example data.</b> Reading the chain now — the graph will swap to live pools when it
+              answers.
+            </>
+          ) : (
+            <>
+              <b>Example data.</b> The chain did not answer, so this is the example graph. Nothing
+              here is a real pool.
+            </>
+          )}
         </p>
       </div>
       <div className="controls">
         <label>
           from
-          <select id="pool-from" value={from} onChange={(e) => setFrom(e.target.value)}>
+          <select
+            id="pool-from"
+            value={from}
+            onChange={(e) => setEnds([e.target.value, to])}
+          >
             {tokens.map((t) => (
               <option key={t} value={t}>
                 {t}
@@ -288,7 +356,7 @@ function PoolsLab() {
         </label>
         <label>
           to
-          <select id="pool-to" value={to} onChange={(e) => setTo(e.target.value)}>
+          <select id="pool-to" value={to} onChange={(e) => setEnds([from, e.target.value])}>
             {tokens.map((t) => (
               <option key={t} value={t}>
                 {t}
@@ -316,7 +384,7 @@ function PoolsLab() {
         food={food}
         aspect={0.56}
         stepInterval={38}
-        renderOptions={{ showLabels: true, padding: 44, showLattice: true, showFlow: true }}
+        renderOptions={{ showLabels: true, padding: 58, showLattice: true, showFlow: true }}
         onStats={setStats}
       />
       <div className="strip">
@@ -324,16 +392,13 @@ function PoolsLab() {
           step <b>{stats?.steps ?? 0}</b>
         </span>
         <span>
-          route <b>{best.nodes.length ? best.nodes.map((i) => tokens[i]).join(' → ') : 'none'}</b>
+          route <b>{best.nodes.length ? best.nodes.map((i) => tokens[i]).join(' \u2192 ') : 'none'}</b>
         </span>
         <span>
-          cost <b>{isFinite(best.distance) ? `${(best.distance * 100).toFixed(2)}%` : '—'}</b>
+          cost <b>{isFinite(best.distance) ? `${(best.distance * 100).toFixed(2)}%` : '\u2014'}</b>
         </span>
         <span>
-          worst pool{' '}
-          <b>
-            {Math.max(...EXAMPLE_POOLS.map((p) => poolCost(p, { tradeSizeUsd }) * 100)).toFixed(1)}%
-          </b>
+          worst pool <b>{worst.toFixed(1)}%</b>
         </span>
       </div>
     </div>
@@ -427,9 +492,15 @@ const PLAN: Array<[string, string, string, 'done' | 'now' | 'next']> = [
   ['02', 'Verified against Dijkstra', 'Twenty random mazes, twenty matches, in the test suite', 'done'],
   ['03', 'Network mode', 'Thirty-six cities, connected, cost 2.04 against the minimum spanning tree', 'done'],
   ['04', 'Published', 'MIT, full source, runs from a clean clone', 'done'],
-  ['05', 'Live pool data', 'Replace the example pools with the RH Chain indexer feed', 'now'],
-  ['06', 'Token', `${TICKER} on Robinhood Chain`, 'next'],
-  ['07', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'next'],
+  [
+    '05',
+    'Live pool data',
+    'The Pools screen reads Uniswap V2 off Robinhood Chain in your browser — no indexer, no key',
+    'done',
+  ],
+  ['06', 'Token', `${NAME} · ${TICKER} on Robinhood Chain`, 'now'],
+  ['07', 'Concentrated liquidity', 'V3 and V4 routed through their own quoter, not this estimate', 'next'],
+  ['08', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'next'],
 ];
 
 export function Site() {
@@ -519,7 +590,9 @@ export function Site() {
           </p>
 
           <div className="ca">
-            <span className="tick">Contract · {TICKER}</span>
+            <span className="tick">
+              {NAME} · {TICKER}
+            </span>
             <span className={CONTRACT ? 'addr' : 'addr pending'}>
               {CONTRACT ?? 'not deployed yet — no token exists at this time'}
             </span>

@@ -587,6 +587,23 @@ button.ghost:hover {
   max-width: 74ch;
 }
 
+.feed {
+  margin-top: 12px !important;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-2);
+  color: var(--muted);
+  font-size: 13.5px !important;
+}
+
+.feed b {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.feed-live {
+  border-left-color: var(--live);
+}
+
 .controls {
   display: flex;
   flex-wrap: wrap;

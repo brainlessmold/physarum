@@ -203,22 +203,43 @@ export function render(
   }
 
   if (opts.showLabels) {
-    ctx.fillStyle = pal.label;
     ctx.font = '10px ui-monospace, monospace';
-    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     for (let i = 0; i < graph.nodes.length; i++) {
-      const label = graph.nodes[i].label;
+      const node = graph.nodes[i];
+      const label = node.label;
       if (!label) continue;
-      const x = px(i);
-      const y = py(i) - 10;
-      // A plate behind the text, so labels do not sit on top of tubes.
       const w = ctx.measureText(label).width;
+      const gap = 9;
+      let x = px(i);
+      let y = py(i);
+      switch (node.anchor ?? 'n') {
+        case 'e':
+          ctx.textAlign = 'left';
+          x += gap;
+          break;
+        case 'w':
+          ctx.textAlign = 'right';
+          x -= gap;
+          break;
+        case 's':
+          ctx.textAlign = 'center';
+          y += gap + 5;
+          break;
+        default:
+          ctx.textAlign = 'center';
+          y -= gap + 5;
+      }
+      // A plate behind the text, so labels do not sit on top of tubes.
+      const left = ctx.textAlign === 'left' ? x : ctx.textAlign === 'right' ? x - w : x - w / 2;
       ctx.fillStyle = pal.bg;
       ctx.globalAlpha = 0.85;
-      ctx.fillRect(x - w / 2 - 3, y - 9, w + 6, 12);
+      ctx.fillRect(left - 3, y - 6, w + 6, 12);
       ctx.globalAlpha = 1;
       ctx.fillStyle = pal.label;
       ctx.fillText(label, x, y);
     }
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
   }
 }

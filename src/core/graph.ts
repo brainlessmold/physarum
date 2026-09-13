@@ -11,6 +11,13 @@ export interface GraphNode {
   /** Depth, for the three-dimensional panel. Absent means flat. */
   z?: number;
   label?: string;
+  /**
+   * Which side of the node its label sits on. A layout that knows where a node
+   * sits relative to its neighbours knows where the label will not collide;
+   * without this every label goes above, and on a graph with a horizontal spine
+   * they pile onto each other.
+   */
+  anchor?: 'n' | 's' | 'e' | 'w';
 }
 
 export interface GraphEdge {
