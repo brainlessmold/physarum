@@ -7,8 +7,8 @@ import { fetchLivePools, toPools, type LiveSnapshot } from './core/chain.ts';
 import { SimCanvas, type SimStats } from './SimCanvas.tsx';
 import { Sim3D, type Sim3DStats } from './Sim3D.tsx';
 
-/** Replace once the token is deployed. */
-const CONTRACT: string | null = null;
+/** Verified on chain: name Physarum, symbol PHYSARUM, 18 decimals, 1e9 supply. */
+const CONTRACT: string | null = '0x421f2cedab5e16fbfa39fd537b67863c6a7c72af';
 /** Name and ticker are the same word, as everywhere else in this meta. */
 const NAME = 'Physarum';
 const TICKER = 'PHYSARUM';
@@ -501,8 +501,8 @@ const PLAN: Array<[string, string, string, 'done' | 'now' | 'next']> = [
     'The Pools screen reads Uniswap V2 off Robinhood Chain in your browser — no indexer, no key',
     'done',
   ],
-  ['06', 'Token', `${NAME} · ${TICKER} on Robinhood Chain`, 'now'],
-  ['07', 'Concentrated liquidity', 'V3 and V4 routed through their own quoter, not this estimate', 'next'],
+  ['06', 'Token', `${NAME} · ${TICKER}, deployed on Robinhood Chain`, 'done'],
+  ['07', 'Concentrated liquidity', 'V3 and V4 routed through their own quoter, not this estimate', 'now'],
   ['08', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'next'],
 ];
 
