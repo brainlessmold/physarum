@@ -19,6 +19,18 @@
  */
 
 export const RPC_URL = 'https://rpc.mainnet.chain.robinhood.com';
+
+/**
+ * Where to go when the browser refuses the direct answer.
+ *
+ * The public RPC intermittently sends Access-Control-Allow-Origin twice — the
+ * browser reports it as "*,*" and drops the response. It clears up on its own
+ * within a minute, but a visitor who lands during one of those windows sees a
+ * page claiming live data and showing none. So every call goes direct first and
+ * only falls back to this pass-through, which forwards the same body to the same
+ * endpoint and adds a header the browser will accept. See api/rpc.ts.
+ */
+export const RPC_FALLBACK = '/api/rpc';
 export const CHAIN_ID = 4663;
 
 export const V2_FACTORY = '0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f';
@@ -115,22 +127,28 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * backs off and tries again rather than tearing the whole page down.
  */
 async function send(body: unknown, io: Io): Promise<unknown> {
-  const url = io.rpcUrl ?? RPC_URL;
+  const direct = io.rpcUrl ?? RPC_URL;
   const f: Fetcher = io.fetcher ?? ((u, i) => fetch(u, i));
-  const tries = io.retries ?? 4;
+  const tries = io.retries ?? 3;
+  // Direct first, every time. The fallback is only reached once the endpoint
+  // has refused three times in a row, and it is dropped again on the next call.
+  const routes = io.rpcUrl || io.fetcher ? [direct] : [direct, RPC_FALLBACK];
   let last: unknown = null;
-  for (let attempt = 0; attempt < tries; attempt++) {
-    try {
-      const res = await f(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error(`rpc ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      last = err;
-      if (attempt < tries - 1) await wait(600 * (attempt + 1));
+
+  for (const url of routes) {
+    for (let attempt = 0; attempt < tries; attempt++) {
+      try {
+        const res = await f(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`rpc ${res.status}`);
+        return await res.json();
+      } catch (err) {
+        last = err;
+        if (attempt < tries - 1) await wait(500 * (attempt + 1));
+      }
     }
   }
   throw last instanceof Error ? last : new Error('rpc unreachable');
@@ -380,18 +398,26 @@ export async function fetchLivePools(options: ScanOptions = {}): Promise<LiveSna
   for (const hub of HUBS) {
     const price = hubUsd[hub.symbol];
     if (!price) continue;
-    const records = (await fetchHubPairs(hub, from, io)).slice(-perHubScan);
-    if (records.length === 0) continue;
+    // One hub failing is not a reason to show nothing. A snapshot missing a
+    // hub is still true; an empty page claiming live data is not.
+    let records: PairRecord[];
+    let reserves: (string | null)[];
+    let token0s: (string | null)[];
+    try {
+      records = (await fetchHubPairs(hub, from, io)).slice(-perHubScan);
+      if (records.length === 0) continue;
+      reserves = await ethCallBatch(
+        records.map((r) => ({ to: r.pair, data: SEL.getReserves })),
+        io,
+      );
+      token0s = await ethCallBatch(
+        records.map((r) => ({ to: r.pair, data: SEL.token0 })),
+        io,
+      );
+    } catch {
+      continue;
+    }
     scanned += records.length;
-
-    const reserves = await ethCallBatch(
-      records.map((r) => ({ to: r.pair, data: SEL.getReserves })),
-      io,
-    );
-    const token0s = await ethCallBatch(
-      records.map((r) => ({ to: r.pair, data: SEL.token0 })),
-      io,
-    );
 
     const priced: Found[] = [];
     for (let i = 0; i < records.length; i++) {

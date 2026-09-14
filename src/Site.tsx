@@ -321,10 +321,13 @@ function PoolsLab() {
               <b>Live.</b> {snapshot.pools.length} Uniswap V2 pools, read from Robinhood Chain at
               block {snapshot.blockNumber.toLocaleString('en-US')}. The factory's own PairCreated
               events give every pool on each hub; the reserves, symbols and prices are then read
-              from the pools themselves over the public RPC — no indexer, no API key, no server of
-              ours in between. WETH at $
+              from the pools themselves, straight from your browser over the public RPC — no
+              indexer, no API key, nothing precomputed. WETH at $
               {ethUsd ? Math.round(ethUsd).toLocaleString('en-US') : '—'}, priced from the WETH/USDG
-              pool, and every other hub priced through that.
+              pool, and every other hub priced through that. (That endpoint intermittently sends its
+              CORS header twice, which browsers reject; when that happens the call is repeated
+              through a pass-through that forwards the same request unchanged — <code>api/rpc.ts</code>
+              in the repository.)
             </>
           ) : feed === 'loading' ? (
             <>
