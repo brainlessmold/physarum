@@ -18,6 +18,17 @@ export interface Pool {
   feeBps: number;
   /** Pool liquidity in USD. */
   liquidityUsd: number;
+  /**
+   * Cost of the hop, already known, as a fraction. Set when the number came
+   * from the venue's own quoter rather than from a formula — a V3 pool holds
+   * its liquidity in ticks and nothing computed from a single depth figure
+   * describes it.
+   */
+  cost?: number;
+  /** Which market the number above came from. */
+  venue?: 'v2' | 'v3';
+  /** V3 fee tier in hundredths of a basis point, when venue is v3. */
+  feeTier?: number;
 }
 
 export interface CostModel {
@@ -26,18 +37,32 @@ export interface CostModel {
 }
 
 /**
- * Cost of routing through a pool = fee + slippage estimate.
+ * What one hop costs, as a fraction of the trade.
  *
- * For a constant-product pool the slippage on a trade of size S against
- * liquidity Lq is approximately S / Lq. This is a rough estimate, not an exact
- * tick-level computation: it is meant for ranking routes, not for quoting.
- * Before any real swap the route must be re-checked against the pool's own
- * quoter.
+ * A pool that carries its own quote uses it — that is a simulation of the swap
+ * against real pool state, and nothing here improves on it.
+ *
+ * Otherwise the pool is constant-product, and for those the cost is not an
+ * estimate either. Trading x of a reserve R for the other side:
+ *
+ *     out / in = (1 - f) * R_out / (R_in + (1 - f) x)
+ *     mid      = R_out / R_in
+ *     cost     = 1 - (out / in) / mid = 1 - (1 - f) / (1 + (1 - f) x / R_in)
+ *
+ * liquidityUsd counts both sides of the pool, so the input side is half of it.
+ * The older version of this used `fee + S / L`, which understated slippage by
+ * a factor of two and drifted badly once the trade approached the pool's size.
  */
 export function poolCost(pool: Pool, model: CostModel): number {
-  const fee = pool.feeBps / 10_000;
-  const slippage = pool.liquidityUsd > 0 ? model.tradeSizeUsd / pool.liquidityUsd : 1;
-  return Math.max(fee + slippage, 1e-6);
+  if (pool.cost !== undefined && isFinite(pool.cost)) {
+    return Math.max(pool.cost, 1e-6);
+  }
+  const f = pool.feeBps / 10_000;
+  const reserveIn = pool.liquidityUsd / 2;
+  if (!(reserveIn > 0)) return 1;
+  const ratio = model.tradeSizeUsd / reserveIn;
+  const cost = 1 - (1 - f) / (1 + (1 - f) * ratio);
+  return Math.max(Math.min(cost, 1), 1e-6);
 }
 
 export interface PoolGraph {

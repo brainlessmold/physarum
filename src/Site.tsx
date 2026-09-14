@@ -286,9 +286,10 @@ function PoolsLab() {
   }, []);
 
   const pools = useMemo(
-    () => (snapshot ? toPools(snapshot) : EXAMPLE_POOLS),
-    [snapshot],
+    () => (snapshot ? toPools(snapshot, tradeSizeUsd) : EXAMPLE_POOLS),
+    [snapshot, tradeSizeUsd],
   );
+  const viaV3 = pools.filter((p) => p.venue === 'v3').length;
 
   const { graph, tokens, indexOf } = useMemo(
     () => buildPoolGraph(pools, { tradeSizeUsd }),
@@ -324,10 +325,19 @@ function PoolsLab() {
               from the pools themselves, straight from your browser over the public RPC — no
               indexer, no API key, nothing precomputed. WETH at $
               {ethUsd ? Math.round(ethUsd).toLocaleString('en-US') : '—'}, priced from the WETH/USDG
-              pool, and every other hub priced through that. (That endpoint intermittently sends its
-              CORS header twice, which browsers reject; when that happens the call is repeated
-              through a pass-through that forwards the same request unchanged — <code>api/rpc.ts</code>
-              in the repository.)
+              pool, and every other hub priced through that.{' '}
+              {viaV3 > 0 ? (
+                <>
+                  <b>{viaV3}</b> of these hops route through Uniswap V3 instead, because its own
+                  quoter answered cheaper at this trade size — those costs are a simulation of the
+                  swap against live tick state, not a formula.
+                </>
+              ) : (
+                <>Every hop here is constant-product; V3 was asked and quoted no cheaper.</>
+              )}{' '}
+              (The endpoint intermittently sends its CORS header twice, which browsers reject; when
+              that happens the call is repeated through a pass-through that forwards the same
+              request unchanged — <code>api/rpc.ts</code> in the repository.)
             </>
           ) : feed === 'loading' ? (
             <>
@@ -402,6 +412,9 @@ function PoolsLab() {
         </span>
         <span>
           worst pool <b>{worst.toFixed(1)}%</b>
+        </span>
+        <span>
+          venue <b>{viaV3 > 0 ? `${pools.length - viaV3}×V2 · ${viaV3}×V3` : 'V2'}</b>
         </span>
       </div>
     </div>
@@ -502,8 +515,14 @@ const PLAN: Array<[string, string, string, 'done' | 'now' | 'next']> = [
     'done',
   ],
   ['06', 'Token', `${NAME} · ${TICKER}, deployed on Robinhood Chain`, 'done'],
-  ['07', 'Concentrated liquidity', 'V3 and V4 routed through their own quoter, not this estimate', 'now'],
-  ['08', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'next'],
+  [
+    '07',
+    'Concentrated liquidity',
+    'Every hop also quoted on Uniswap V3 through QuoterV2 — a simulated swap, not a formula',
+    'done',
+  ],
+  ['08', 'Uniswap V4', 'The same, through the V4 quoter and its singleton pools', 'now'],
+  ['09', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'next'],
 ];
 
 export function Site() {

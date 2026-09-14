@@ -18,6 +18,9 @@
  *   UniswapV2Factory       github.com/Uniswap/contracts deployments/4663.md
  */
 
+import { findV3Pools, quoteV3, cheapestPerPair, type V3Cost } from './v3.ts';
+import { poolCost } from './pools.ts';
+
 export const RPC_URL = 'https://rpc.mainnet.chain.robinhood.com';
 
 /**
@@ -219,6 +222,9 @@ export const HUBS: Hub[] = [
 
 export const VIRTUAL = HUBS[1].address;
 
+/** The trade sizes the page offers, quoted up front so the control is instant. */
+export const TRADE_SIZES_USD = [1_000, 10_000, 50_000, 250_000];
+
 export interface LivePool {
   pair: string;
   /** Which hub this pool is anchored on. */
@@ -234,6 +240,8 @@ export interface LivePool {
 
 export interface LiveSnapshot {
   pools: LivePool[];
+  /** Concentrated-liquidity quotes for the same pairs, keyed "hub>token". */
+  v3: Record<string, V3Cost>;
   /** Every hub priced in dollars, read from the pools themselves. */
   hubUsd: Record<string, number>;
   /** Chain head at the time of the read. */
@@ -497,7 +505,42 @@ export async function fetchLivePools(options: ScanOptions = {}): Promise<LiveSna
     liquidityUsd: f.usd,
   }));
 
-  return { pools, hubUsd, blockNumber: head, scanned };
+  // The same pairs, asked of Uniswap V3. A pair may have a concentrated pool
+  // that is far cheaper than the constant-product one, or none at all.
+  const hubByName = new Map(HUBS.map((h) => [h.symbol, h]));
+  const decimalsOf = new Map<string, number>();
+  for (const h of HUBS) decimalsOf.set(h.address, h.decimals);
+
+  const amountInOf = (tokenIn: string, sizeUsd: number): bigint => {
+    const hub = HUBS.find((h) => h.address === tokenIn);
+    const price = hub ? hubUsd[hub.symbol] : undefined;
+    const decimals = hub?.decimals ?? 18;
+    if (!price || !(price > 0)) return 0n;
+    const units = (sizeUsd / price) * 10 ** decimals;
+    return BigInt(Math.max(1, Math.round(units)));
+  };
+
+  const v3: Record<string, V3Cost> = {};
+  try {
+    const wanted = pools
+      .map((p) => ({ tokenIn: hubByName.get(p.hub)?.address ?? '', tokenOut: p.token }))
+      .filter((p) => p.tokenIn && p.tokenOut && p.tokenIn !== p.tokenOut);
+    if (wanted.length > 0) {
+      const v3pools = await findV3Pools(wanted, io);
+      const quotes = await quoteV3(v3pools, amountInOf, TRADE_SIZES_USD, io);
+      for (const [key, q] of cheapestPerPair(quotes, TRADE_SIZES_USD[1])) v3[key] = q;
+      // keep every tier's ladder, not only the cheapest at one size
+      for (const q of quotes) {
+        const key = `${q.tokenIn}>${q.tokenOut}`;
+        const cur = v3[key];
+        if (!cur) v3[key] = q;
+      }
+    }
+  } catch {
+    // V3 is an improvement on the estimate, not a requirement for the page.
+  }
+
+  return { pools, hubUsd, v3, blockNumber: head, scanned };
 }
 
 /**
@@ -507,7 +550,10 @@ export async function fetchLivePools(options: ScanOptions = {}): Promise<LiveSna
  * tokens sharing a ticker is normal, and silently merging them into one node
  * would invent a route that does not exist.
  */
-export function toPools(snapshot: LiveSnapshot): import('./pools.ts').Pool[] {
+export function toPools(
+  snapshot: LiveSnapshot,
+  tradeSizeUsd: number = TRADE_SIZES_USD[1],
+): import('./pools.ts').Pool[] {
   const used = new Map<string, string>();
   const label = (token: string, symbol: string) => {
     const existing = used.get(token);
@@ -520,10 +566,27 @@ export function toPools(snapshot: LiveSnapshot): import('./pools.ts').Pool[] {
     return name;
   };
   const hubAddress = new Map(HUBS.map((h) => [h.symbol, h.address]));
-  return snapshot.pools.map((p) => ({
-    tokenA: label(hubAddress.get(p.hub) ?? p.hub, p.hub),
-    tokenB: label(p.token, p.symbol),
-    feeBps: V2_FEE_BPS,
-    liquidityUsd: p.liquidityUsd,
-  }));
+
+  return snapshot.pools.map((p) => {
+    const hubAddr = hubAddress.get(p.hub) ?? p.hub;
+    const base: import('./pools.ts').Pool = {
+      tokenA: label(hubAddr, p.hub),
+      tokenB: label(p.token, p.symbol),
+      feeBps: V2_FEE_BPS,
+      liquidityUsd: p.liquidityUsd,
+      venue: 'v2',
+    };
+
+    // If a concentrated pool quotes the same hop cheaper, route through it and
+    // say so. The comparison is like for like: both numbers are the fraction of
+    // the trade lost, at this trade size.
+    const quote = snapshot.v3[`${hubAddr}>${p.token}`];
+    const quoted = quote?.costBySize[tradeSizeUsd];
+    if (quoted === undefined) return base;
+
+    const v2Cost = poolCost(base, { tradeSizeUsd });
+    if (quoted >= v2Cost) return base;
+
+    return { ...base, cost: quoted, venue: 'v3', feeTier: quote.fee };
+  });
 }
