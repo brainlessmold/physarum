@@ -318,12 +318,16 @@ function TokenPanel() {
           <dt>pools on Uniswap V4</dt>
           <dd>
             {market.pools}
-            {market.hooked > 0 ? <small>{market.hooked} with a hook</small> : null}
+            {market.hooked > 0 ? (
+              <small>
+                {market.hooked} of them {market.hooked === 1 ? 'runs' : 'run'} a hook
+              </small>
+            ) : null}
           </dd>
         </div>
         <div>
-          <dt>fee of the best pool</dt>
-          <dd>{(((market.best?.fee ?? 0) / 10_000)).toFixed(2)}%</dd>
+          <dt>read at block</dt>
+          <dd>{market.blockNumber ? market.blockNumber.toLocaleString('en-US') : '\u2014'}</dd>
         </div>
       </dl>
       <p className="feed feed-live">

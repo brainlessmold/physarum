@@ -196,6 +196,8 @@ export interface TokenMarket {
   best: V4Pool | null;
   /** What was sent in to get the quote — a small trade, to stay near the marginal price. */
   probeUsd: number;
+  /** Chain head when the quote was taken. A quote is only true for its block. */
+  blockNumber: number | null;
 }
 
 /**
@@ -212,23 +214,26 @@ export async function fetchTokenMarket(
 ): Promise<TokenMarket> {
   const decimals = options.decimals ?? 18;
   const probeUsd = options.probeUsd ?? 25;
-  const empty: TokenMarket = { token, priceUsd: null, pools: 0, hooked: 0, best: null, probeUsd };
+  const empty: TokenMarket = { token, priceUsd: null, pools: 0, hooked: 0, best: null, probeUsd, blockNumber: null };
   if (!(options.ethUsd > 0)) return empty;
+
+  const head = await rpc<string>('eth_blockNumber', [], io).catch(() => null);
+  const blockNumber = head ? Number(BigInt(head)) : null;
 
   const pools = await findV4Pools(token, options.fromBlock ?? 0, io);
   const hooked = pools.filter((p) => p.hooked).length;
   const againstEth = pools.filter(
     (p) => p.currency0 === NATIVE || p.currency1 === NATIVE,
   );
-  if (againstEth.length === 0) return { ...empty, pools: pools.length, hooked };
+  if (againstEth.length === 0) return { ...empty, pools: pools.length, hooked, blockNumber };
 
   const amountIn = BigInt(Math.max(1, Math.round((probeUsd / options.ethUsd) * 1e18)));
   const quotes = await quoteV4(againstEth, NATIVE, amountIn, io);
   const best = bestQuote(quotes);
-  if (!best) return { ...empty, pools: pools.length, hooked };
+  if (!best) return { ...empty, pools: pools.length, hooked, blockNumber };
 
   const tokensOut = Number(best.amountOut) / 10 ** decimals;
   const priceUsd = tokensOut > 0 ? probeUsd / tokensOut : null;
 
-  return { token, priceUsd, pools: pools.length, hooked, best: best.pool, probeUsd };
+  return { token, priceUsd, pools: pools.length, hooked, best: best.pool, probeUsd, blockNumber };
 }

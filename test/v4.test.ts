@@ -183,6 +183,7 @@ check('a price came out', market.priceUsd !== null, `$${market.priceUsd?.toFixed
 check('it is the price from the best pool', Math.abs((market.priceUsd ?? 0) - expectedPrice) < 1e-12, `$${expectedPrice.toFixed(8)} per token`);
 check('every pool is counted, not only the ones priced', market.pools === 4, `${market.pools} pools, ${market.hooked} hooked`);
 check('the probe is small on purpose', market.probeUsd === 25, '$25, to stay near the marginal price');
+check('the block the quote belongs to is carried with it', market.blockNumber === null || typeof market.blockNumber === 'number', 'a quote is only true for its block');
 check('a token with no ETH pool prices as nothing rather than guessing', (await fetchTokenMarket('0x' + '9'.repeat(40), { ethUsd: 2_538 }, io)).priceUsd === null, 'returns null');
 check('no price is invented when the chain gives no ETH price', (await fetchTokenMarket(TOKEN, { ethUsd: 0 }, io)).priceUsd === null, 'returns null');
 
