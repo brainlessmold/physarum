@@ -12,6 +12,8 @@
 import {
   ethCallBatch,
   fetchHubPairs,
+  fetchAllPairs,
+  hubPairsFrom,
   fetchHubPrices,
   fetchLivePools,
   readReserves,
@@ -84,6 +86,7 @@ const asLog = (l: (typeof LOGS)[number]) => ({
 });
 
 let requests = 0;
+let logQueries = 0;
 let largestBatch = 0;
 let failNext = 0;
 
@@ -101,6 +104,7 @@ const fakeFetcher = async (_url: string, init: RequestInit): Promise<Response> =
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + HEAD.toString(16) }));
     }
     if (method === 'eth_getLogs') {
+      logQueries++;
       const [t, a, b] = params[0].topics as (string | null)[];
       const hit = LOGS.filter(
         (l) => t === PAIR_CREATED && (!a || topic(l.t0) === a) && (!b || topic(l.t1) === b),
@@ -197,6 +201,33 @@ check(
   'records come back oldest first',
   wethPairs[0].block <= wethPairs[wethPairs.length - 1].block,
   'so slicing the end takes the newest',
+);
+
+/* One query for the whole factory, split up here. The per-hub queries above
+   cost one request each per side; this costs one for all of them, which is the
+   difference between a read the endpoint answers and one it refuses. */
+const before = logQueries;
+const allLogs = await fetchAllPairs(0, io);
+check(
+  'the whole factory comes back in a single log query',
+  logQueries - before === 1 && allLogs.length === LOGS.length,
+  `1 request, ${allLogs.length} events`,
+);
+check(
+  'splitting that log by hub gives the same pools as asking per hub',
+  hubPairsFrom(allLogs, HUBS[0]).map((p) => p.pair).join() === wethPairs.map((p) => p.pair).join() &&
+    hubPairsFrom(allLogs, HUBS[1]).map((p) => p.pair).join() === virtualPairs.map((p) => p.pair).join(),
+  'same pools, same order, no second request',
+);
+check(
+  'and the token on the other side still comes out right way round',
+  hubPairsFrom(allLogs, HUBS[1])[0].other === GTR,
+  'VIRTUAL/GTR read as other = GTR',
+);
+check(
+  'a hub with nothing in the log gets an empty list, not a wrong one',
+  hubPairsFrom([], HUBS[0]).length === 0,
+  'no pools invented from no events',
 );
 
 /* ---------------- prices ---------------- */

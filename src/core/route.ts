@@ -42,7 +42,7 @@ export interface RouteError {
 
 const pct = (x: number) => +(x * 100).toFixed(4);
 /** Pools are undirected, so a pair is keyed by its two labels in a fixed order. */
-const pairKey = (a: string, b: string) => [a, b].sort().join(' -> ');
+const hopKey = (a: string, b: string) => [a, b].sort().join(' -> ');
 
 export function planRoute(
   pools: Pool[],
@@ -64,13 +64,13 @@ export function planRoute(
   const finite = isFinite(best.distance);
 
   const byPair = new Map<string, Pool>();
-  for (const p of pools) byPair.set(pairKey(p.tokenA, p.tokenB), p);
+  for (const p of pools) byPair.set(hopKey(p.tokenA, p.tokenB), p);
 
   const hops: Hop[] = best.edges.map((ei) => {
     const e = graph.edges[ei];
     const x = graph.nodes[e.a].label ?? '';
     const y = graph.nodes[e.b].label ?? '';
-    const pool = byPair.get(pairKey(x, y));
+    const pool = byPair.get(hopKey(x, y));
     return {
       from: x,
       to: y,

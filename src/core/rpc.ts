@@ -38,6 +38,19 @@ export const readAddress = (w: string) => '0x' + w.slice(-40);
 export const readUint = (hex: string, slot: number) =>
   BigInt('0x' + hex.slice(2 + slot * 64, 2 + (slot + 1) * 64));
 
+/**
+ * The first word of a return value, or null if there isn't one.
+ *
+ * Distinct from readUint above, which indexes into a return value it trusts to
+ * be long enough. A quoter that reverts answers with nothing, and the caller
+ * needs to be able to tell that apart from an answer of zero.
+ */
+export const readFirstUint = (hex: string): bigint | null =>
+  hex && hex.length >= 66 ? BigInt('0x' + hex.slice(2, 66)) : null;
+
+/** A number as a 32-byte word, for hand-encoded call data. */
+export const numWord = (n: bigint | number) => BigInt(n).toString(16).padStart(64, '0');
+
 /** Decodes a solidity `string` return value. Falls back to null on bytes32-style symbols. */
 export function readString(hex: string): string | null {
   if (!hex || hex.length < 130) return null;
@@ -71,6 +84,16 @@ export interface Io {
   pauseMs?: number;
   /** Attempts per request before giving up. The public RPC throttles. */
   retries?: number;
+  /**
+   * A second address to try once the first has refused.
+   *
+   * The endpoint's budget is per caller, and the pass-through in api/rpc.ts
+   * calls from somewhere else, so the two have separate budgets. Whichever has
+   * been leaned on recently is the one that refuses — that was measured, in
+   * both directions, an hour apart. So the direct route is tried first and this
+   * is what is left when it runs out.
+   */
+  fallbackUrl?: string;
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -119,9 +142,10 @@ async function send(body: unknown, io: Io): Promise<unknown> {
   const direct = io.rpcUrl ?? RPC_URL;
   const f: Fetcher = io.fetcher ?? ((u, i) => fetch(u, i));
   const tries = io.retries ?? BACKOFF_MS.length;
-  // Direct first, every time. The fallback is only reached once the endpoint
-  // has refused three times in a row, and it is dropped again on the next call.
-  const routes = io.rpcUrl || io.fetcher ? [direct] : [direct, RPC_FALLBACK];
+  // Direct first, every time. The spare is only reached once the endpoint has
+  // refused every attempt, and it is dropped again on the next call.
+  const spare = io.fetcher ? null : (io.fallbackUrl ?? (io.rpcUrl ? null : RPC_FALLBACK));
+  const routes = spare ? [direct, spare] : [direct];
   let last: unknown = null;
 
   for (const url of routes) {

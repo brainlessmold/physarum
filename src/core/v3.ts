@@ -28,7 +28,7 @@
  * Addresses from github.com/Uniswap/contracts, deployments/4663.md.
  */
 
-import { ethCallBatch, type Call, type Io } from './rpc.ts';
+import { ethCallBatch, type Call, type Io, addrWord, readAddress, readFirstUint, numWord } from './rpc.ts';
 
 export const V3_FACTORY = '0x1f7d7550b1b028f7571e69a784071f0205fd2efa';
 export const QUOTER_V2 = '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7';
@@ -36,18 +36,13 @@ export const QUOTER_V2 = '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7';
 /** The four fee tiers Uniswap deploys, in hundredths of a basis point. */
 export const FEE_TIERS = [100, 500, 3000, 10_000] as const;
 
-const SEL = {
+const SEL_V3 = {
   /** getPool(address,address,uint24) */
   getPool: '0x1698ee82',
   /** quoteExactInputSingle((address,address,uint256,uint24,uint160)) */
   quote: '0xc6a5026a',
 } as const;
 
-const addrWord = (a: string) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
-const numWord = (n: bigint | number) => BigInt(n).toString(16).padStart(64, '0');
-const readAddress = (w: string) => '0x' + w.slice(-40);
-const readUint = (hex: string) =>
-  hex && hex.length >= 66 ? BigInt('0x' + hex.slice(2, 66)) : null;
 
 export interface V3Pool {
   tokenIn: string;
@@ -70,7 +65,7 @@ export async function findV3Pools(
     for (const fee of FEE_TIERS) {
       calls.push({
         to: V3_FACTORY,
-        data: SEL.getPool + addrWord(p.tokenIn) + addrWord(p.tokenOut) + numWord(fee),
+        data: SEL_V3.getPool + addrWord(p.tokenIn) + addrWord(p.tokenOut) + numWord(fee),
       });
       meta.push({ ...p, fee });
     }
@@ -127,7 +122,7 @@ export async function quoteV3(
     const q = (amount: bigint) => ({
       to: QUOTER_V2,
       data:
-        SEL.quote +
+        SEL_V3.quote +
         addrWord(p.tokenIn) +
         addrWord(p.tokenOut) +
         numWord(amount) +
@@ -146,7 +141,7 @@ export async function quoteV3(
     const results = answers.slice(cursor, cursor + sizes.length + 1);
     cursor += sizes.length + 1;
 
-    const probeOut = readUint(results[sizes.length] ?? '');
+    const probeOut = readFirstUint(results[sizes.length] ?? '');
     if (probeOut === null || probeOut <= 0n) continue;
     const probeRate = Number(probeOut) / Number(probe);
     if (!isFinite(probeRate) || probeRate <= 0) continue;
@@ -157,7 +152,7 @@ export async function quoteV3(
 
     const costBySize: Record<number, number> = {};
     sizes.forEach((amountIn, i) => {
-      const amountOut = readUint(results[i] ?? '');
+      const amountOut = readFirstUint(results[i] ?? '');
       if (amountOut === null || amountOut <= 0n) return;
       const rate = Number(amountOut) / Number(amountIn);
       const cost = 1 - rate / marginal;

@@ -22,7 +22,7 @@
  * Addresses from github.com/Uniswap/contracts, deployments/4663.md.
  */
 
-import { ethCallBatch, rpc, type Call, type Io } from './rpc.ts';
+import { ethCallBatch, rpc, type Call, type Io, addrWord, readAddress, readFirstUint } from './rpc.ts';
 
 export const POOL_MANAGER = '0x8366a39cc670b4001a1121b8f6a443a643e40951';
 export const V4_QUOTER = '0x8dc178efb8111bb0973dd9d722ebeff267c98f94';
@@ -35,7 +35,7 @@ export const NATIVE = '0x0000000000000000000000000000000000000000';
 export const INITIALIZE =
   '0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438';
 
-const SEL = {
+const SEL_V4 = {
   /** StateView.getLiquidity(bytes32) */
   liquidity: '0xfa6793d5',
   /** StateView.getSlot0(bytes32) */
@@ -44,14 +44,12 @@ const SEL = {
   quote: '0xaa9d21cb',
 } as const;
 
-const addrWord = (a: string) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
-const numWord = (n: bigint | number) => {
+/** Like numWord, but for a value that may be negative — the tick spacing is. */
+const signedWord = (n: bigint | number) => {
   let v = BigInt(n);
-  if (v < 0n) v += 1n << 256n; // two's complement, for the signed tick spacing
+  if (v < 0n) v += 1n << 256n; // two's complement
   return v.toString(16).padStart(64, '0');
 };
-const readAddress = (w: string) => '0x' + w.slice(-40);
-const readUint = (hex: string) => (hex && hex.length >= 66 ? BigInt('0x' + hex.slice(2, 66)) : null);
 const wordAt = (data: string, i: number) => data.slice(2 + i * 64, 2 + (i + 1) * 64);
 const readInt24 = (word: string) => {
   const v = parseInt(word.slice(-6), 16);
@@ -126,17 +124,17 @@ export async function findV4Pools(token: string, fromBlock: number, io: Io = {})
  */
 export function encodeQuote(key: PoolKey, zeroForOne: boolean, amountIn: bigint): string {
   return (
-    SEL.quote +
-    numWord(32) +
+    SEL_V4.quote +
+    signedWord(32) +
     addrWord(key.currency0) +
     addrWord(key.currency1) +
-    numWord(key.fee) +
-    numWord(key.tickSpacing) +
+    signedWord(key.fee) +
+    signedWord(key.tickSpacing) +
     addrWord(key.hooks) +
-    numWord(zeroForOne ? 1 : 0) +
-    numWord(amountIn) +
-    numWord(256) +
-    numWord(0)
+    signedWord(zeroForOne ? 1 : 0) +
+    signedWord(amountIn) +
+    signedWord(256) +
+    signedWord(0)
   );
 }
 
@@ -164,15 +162,15 @@ export async function quoteV4(
   for (const p of pools) {
     const zeroForOne = p.currency0.toLowerCase() === from.toLowerCase();
     calls.push({ to: V4_QUOTER, data: encodeQuote(p, zeroForOne, amountIn) });
-    calls.push({ to: STATE_VIEW, data: SEL.liquidity + p.id.slice(2) });
+    calls.push({ to: STATE_VIEW, data: SEL_V4.liquidity + p.id.slice(2) });
   }
   const answers = await ethCallBatch(calls, io);
 
   const out: V4Quote[] = [];
   pools.forEach((pool, i) => {
-    const amountOut = readUint(answers[i * 2] ?? '');
+    const amountOut = readFirstUint(answers[i * 2] ?? '');
     if (amountOut === null || amountOut <= 0n) return;
-    out.push({ pool, amountIn, amountOut, liquidity: readUint(answers[i * 2 + 1] ?? '') });
+    out.push({ pool, amountIn, amountOut, liquidity: readFirstUint(answers[i * 2 + 1] ?? '') });
   });
   return out;
 }

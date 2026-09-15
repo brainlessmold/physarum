@@ -22,12 +22,17 @@
  * a disagreement means this endpoint is wrong — and it says so itself rather
  * than waiting to be caught.
  *
- * The chain is not read directly from here. A single eth_blockNumber sent from
- * this function comes back 429, every time, while the same request from the
- * edge function in api/rpc.ts comes back 200 — the throttling is on this
- * function's egress address, not on the query, the batch size or the project.
- * So the reads go out through that pass-through, which is already deployed,
- * already read-only, and already proven to be answered.
+ * The chain's endpoint gives each caller a budget, and a full read used to
+ * spend more than one. Six of the requests were log queries three million
+ * blocks wide — two per hub — and they are now one query for the whole factory,
+ * split by hub here. What is left is cached in two halves: which pools exist
+ * changes over days, what is in them changes every block, so the expensive half
+ * is held for an hour and the cheap half for a minute.
+ *
+ * There is also a spare route. The pass-through in api/rpc.ts calls from a
+ * different address and therefore has its own budget; whichever has been leaned
+ * on recently is the one that refuses, which was measured in both directions an
+ * hour apart. Direct is tried first and that is the fallback.
  *
  * And the pool snapshot is held between calls rather than read per request.
  * Reading every pool is a few dozen round trips to the chain, and the public
@@ -40,9 +45,11 @@
 // the test suite runs straight from source through node's type stripping, which
 // requires them. The node runtime bundles with esbuild, which resolves both
 // spellings. Web Request and Response work here just the same.
-import * as chain from '../src/core/chain.ts';
-import * as route from '../src/core/route.ts';
-import type { LiveSnapshot } from '../src/core/chain.ts';
+// Named rather than namespace imports: the bundler in scripts/build-api.mjs
+// flattens these modules into one file, and a flattened module has no object
+// to hang a namespace off.
+import { fetchLivePools, toPools, RPC_URL, type LiveSnapshot } from '../src/core/chain.ts';
+import { planRoute } from '../src/core/route.ts';
 
 /**
  * How long a snapshot is served before the chain is read again.
@@ -53,8 +60,11 @@ import type { LiveSnapshot } from '../src/core/chain.ts';
  * the snapshot is held for minutes, its exact age is in every answer, and
  * anyone who needs the current block can read it off the response and go check.
  */
-const MAX_AGE_MS = 300_000;
+const MAX_AGE_MS = 60_000;
+/** Which pools exist. Days, not blocks — so this is held far longer. */
+const PAIRS_MAX_AGE_MS = 3_600_000;
 let cached: { at: number; snapshot: LiveSnapshot } | null = null;
+let pairs: { at: number; logs: LiveSnapshot['pairLogs'] } | null = null;
 /** Two requests arriving together must not both go and read the chain — that
  *  burst is precisely what gets throttled. They share one read instead. */
 let inFlight: Promise<LiveSnapshot> | null = null;
@@ -66,20 +76,22 @@ async function snapshot(
   if (cached && now - cached.at < MAX_AGE_MS) {
     return { snapshot: cached.snapshot, ageMs: now - cached.at, stale: false };
   }
+  // Reuse the pool list while it is still young; only its contents are re-read.
+  const reuse = pairs && now - pairs.at < PAIRS_MAX_AGE_MS ? pairs.logs : undefined;
   if (!inFlight) {
-    // Out through our own edge pass-through rather than straight at the chain,
-    // for the reason at the top of this file. It forwards the body untouched
-    // and refuses anything that is not a read, so nothing is given up by using
-    // it, and it is answered where a direct call is not.
-    inFlight = chain
-      .fetchLivePools({ rpcUrl: `${origin}/api/rpc`, pauseMs: 250 })
-      .finally(() => {
-        inFlight = null;
-      });
+    inFlight = fetchLivePools({
+      rpcUrl: RPC_URL,
+      fallbackUrl: `${origin}/api/rpc`,
+      pauseMs: 250,
+      pairLogs: reuse,
+    }).finally(() => {
+      inFlight = null;
+    });
   }
   try {
     const fresh = await inFlight;
     cached = { at: Date.now(), snapshot: fresh };
+    if (!reuse) pairs = { at: Date.now(), logs: fresh.pairLogs };
     return { snapshot: fresh, ageMs: 0, stale: false };
   } catch (err) {
     // A refusal now is not a reason to have nothing to say. The last good
@@ -186,8 +198,8 @@ async function probe(origin: string): Promise<Answer> {
   }));
 
   const edge = `${origin}/api/rpc`;
-  const head = await attempt('direct: eth_blockNumber', chain.RPC_URL, single);
-  const forty = await attempt('direct: batch of 40 eth_call', chain.RPC_URL, batch);
+  const head = await attempt('direct: eth_blockNumber', RPC_URL, single);
+  const forty = await attempt('direct: batch of 40 eth_call', RPC_URL, batch);
   const viaEdge = await attempt('through /api/rpc: eth_blockNumber', edge, single);
   const viaEdgeBatch = await attempt('through /api/rpc: batch of 40 eth_call', edge, batch);
 
@@ -243,7 +255,7 @@ async function respond(
     return json({ error: 'the chain did not answer', detail }, 502);
   }
 
-  const pools = chain.toPools(snap, size);
+  const pools = toPools(snap, size);
   if (pools.length < 2) return json({ error: 'no pools were readable just now' }, 502);
 
   const from = url.searchParams.get('from');
@@ -258,7 +270,7 @@ async function respond(
     });
   }
 
-  const plan = route.planRoute(pools, from, to, size);
+  const plan = planRoute(pools, from, to, size);
   if ('error' in plan) return json({ ...plan, from, to }, 400);
 
   return json({
