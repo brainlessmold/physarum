@@ -25,21 +25,30 @@
 // the test suite runs straight from source through node's type stripping, which
 // requires them. The node runtime bundles with esbuild, which resolves both
 // spellings. Web Request and Response work here just the same.
-import { fetchLivePools, toPools, RPC_URL, type LiveSnapshot } from '../src/core/chain.ts';
-import { planRoute } from '../src/core/route.ts';
+import type { LiveSnapshot } from '../src/core/chain.ts';
 
-/** Server side there is no CORS to work around, so the chain is read directly. */
-const io = { rpcUrl: RPC_URL };
+// Loaded when the first request arrives rather than when the file does.
+// A module that throws while loading takes the whole function down before any
+// code of ours runs, and the platform reports that as a bare 500 with nothing
+// in it. Pulled in here, the same failure arrives as a catchable error that
+// this endpoint can describe.
+const load = async () => ({
+  chain: await import('../src/core/chain.ts'),
+  route: await import('../src/core/route.ts'),
+});
 
 const MAX_AGE_MS = 8_000;
 let cached: { at: number; snapshot: LiveSnapshot } | null = null;
 
-async function snapshot(): Promise<{ snapshot: LiveSnapshot; ageMs: number }> {
+async function snapshot(
+  chain: Awaited<ReturnType<typeof load>>['chain'],
+): Promise<{ snapshot: LiveSnapshot; ageMs: number }> {
   const now = Date.now();
   if (cached && now - cached.at < MAX_AGE_MS) {
     return { snapshot: cached.snapshot, ageMs: now - cached.at };
   }
-  const fresh = await fetchLivePools({ ...io });
+  // Server side there is no CORS to work around, so the chain is read directly.
+  const fresh = await chain.fetchLivePools({ rpcUrl: chain.RPC_URL });
   cached = { at: now, snapshot: fresh };
   return { snapshot: fresh, ageMs: 0 };
 }
@@ -76,7 +85,15 @@ export default async function handler(
   req: Request | { url?: string; headers?: Record<string, string | string[] | undefined> },
   res?: NodeResponse,
 ): Promise<Response | void> {
-  const answer = await respond(req);
+  let answer: Answer;
+  try {
+    answer = await respond(req);
+  } catch (err) {
+    // Whatever went wrong, say what it was. A bare 500 tells the caller nothing
+    // and tells us less.
+    const message = err instanceof Error ? err.message : String(err);
+    answer = { status: 500, body: { error: 'the endpoint failed', detail: message } };
+  }
   if (res && typeof res.end === 'function') {
     res.statusCode = answer.status;
     for (const [k, v] of Object.entries(HEADERS)) res.setHeader(k, v);
@@ -105,15 +122,18 @@ async function respond(
     return json({ error: 'size must be a positive number of dollars' }, 400);
   }
 
+  const { chain, route } = await load();
+
   let snap: LiveSnapshot;
   let ageMs: number;
   try {
-    ({ snapshot: snap, ageMs } = await snapshot());
-  } catch {
-    return json({ error: 'the chain did not answer' }, 502);
+    ({ snapshot: snap, ageMs } = await snapshot(chain));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return json({ error: 'the chain did not answer', detail }, 502);
   }
 
-  const pools = toPools(snap, size);
+  const pools = chain.toPools(snap, size);
   if (pools.length < 2) return json({ error: 'no pools were readable just now' }, 502);
 
   const from = url.searchParams.get('from');
@@ -128,7 +148,7 @@ async function respond(
     });
   }
 
-  const plan = planRoute(pools, from, to, size);
+  const plan = route.planRoute(pools, from, to, size);
   if ('error' in plan) return json({ ...plan, from, to }, 400);
 
   return json({
