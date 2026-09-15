@@ -22,10 +22,11 @@
  * a disagreement means this endpoint is wrong — and it says so itself rather
  * than waiting to be caught.
  *
- * And the pool snapshot is held for a few seconds between calls. Reading every
- * pool takes a dozen round trips to the chain, and doing that per request would
- * make the endpoint unusable. The age of the snapshot is in every answer, so
- * nobody has to take its freshness on trust.
+ * And the pool snapshot is held between calls rather than read per request.
+ * Reading every pool is a few dozen round trips to the chain, and the public
+ * RPC throttles this address hard enough that doing it per request simply does
+ * not work. The age of the snapshot is in every answer, so nobody has to take
+ * its freshness on trust.
  */
 // Deliberately NOT an edge function. Edge rejects any module specifier ending
 // in .ts anywhere in the graph, and this project writes them everywhere because
@@ -36,18 +37,45 @@ import * as chain from '../src/core/chain.ts';
 import * as route from '../src/core/route.ts';
 import type { LiveSnapshot } from '../src/core/chain.ts';
 
-const MAX_AGE_MS = 8_000;
+/**
+ * How long a snapshot is served before the chain is read again.
+ *
+ * Seconds was the wrong number. Reading every pool is a few dozen round trips,
+ * and the public RPC throttles this address far harder than it throttles a
+ * visitor's browser — the first deploy answered `rpc 429` and nothing else. So
+ * the snapshot is held for minutes, its exact age is in every answer, and
+ * anyone who needs the current block can read it off the response and go check.
+ */
+const MAX_AGE_MS = 300_000;
 let cached: { at: number; snapshot: LiveSnapshot } | null = null;
+/** Two requests arriving together must not both go and read the chain — that
+ *  burst is precisely what gets throttled. They share one read instead. */
+let inFlight: Promise<LiveSnapshot> | null = null;
 
-async function snapshot(): Promise<{ snapshot: LiveSnapshot; ageMs: number }> {
+async function snapshot(): Promise<{ snapshot: LiveSnapshot; ageMs: number; stale: boolean }> {
   const now = Date.now();
   if (cached && now - cached.at < MAX_AGE_MS) {
-    return { snapshot: cached.snapshot, ageMs: now - cached.at };
+    return { snapshot: cached.snapshot, ageMs: now - cached.at, stale: false };
   }
-  // Server side there is no CORS to work around, so the chain is read directly.
-  const fresh = await chain.fetchLivePools({ rpcUrl: chain.RPC_URL });
-  cached = { at: now, snapshot: fresh };
-  return { snapshot: fresh, ageMs: 0 };
+  if (!inFlight) {
+    // Server side there is no CORS to work around, so the chain is read
+    // directly, and more slowly than a browser would.
+    inFlight = chain
+      .fetchLivePools({ rpcUrl: chain.RPC_URL, pauseMs: 400 })
+      .finally(() => {
+        inFlight = null;
+      });
+  }
+  try {
+    const fresh = await inFlight;
+    cached = { at: Date.now(), snapshot: fresh };
+    return { snapshot: fresh, ageMs: 0, stale: false };
+  } catch (err) {
+    // A refusal now is not a reason to have nothing to say. The last good
+    // snapshot is returned with its real age and marked stale.
+    if (cached) return { snapshot: cached.snapshot, ageMs: Date.now() - cached.at, stale: true };
+    throw err;
+  }
 }
 
 const HEADERS: Record<string, string> = {
@@ -121,8 +149,9 @@ async function respond(
 
   let snap: LiveSnapshot;
   let ageMs: number;
+  let stale: boolean;
   try {
-    ({ snapshot: snap, ageMs } = await snapshot());
+    ({ snapshot: snap, ageMs, stale } = await snapshot());
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return json({ error: 'the chain did not answer', detail }, 502);
@@ -152,6 +181,7 @@ async function respond(
     tradeSizeUsd: size,
     block: snap.blockNumber,
     snapshotAgeMs: ageMs,
+    snapshotStale: stale,
     ...plan,
     disclaimer:
       'A quote is true for its block and nothing more. Re-check against the pool before swapping.',

@@ -76,16 +76,49 @@ export interface Io {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * A 429, carrying what the endpoint asked us to wait when it said.
+ *
+ * Written out longhand rather than as a parameter property, because the test
+ * suite runs this file straight through node's type stripping, which refuses
+ * that shorthand.
+ */
+class Throttled extends Error {
+  waitMs: number | null;
+  constructor(waitMs: number | null) {
+    super('rpc 429');
+    this.waitMs = waitMs;
+  }
+}
+
+/**
+ * How long to wait before each further attempt.
+ *
+ * The public endpoint throttles, and it throttles a datacenter address far
+ * harder than a browser: the first deploy of the routing endpoint answered
+ * `rpc 429` while the same code in a visitor's tab was fine. Half a second is
+ * not enough to clear that, so the waits grow into seconds, and when the
+ * endpoint says how long to wait, that is used instead of guessing.
+ */
+const BACKOFF_MS = [600, 1500, 3000, 5000];
+
+/** Whatever Retry-After says, in ms, if it says anything usable. */
+function retryAfterMs(res: Response): number | null {
+  const raw = (res.headers as Headers | undefined)?.get?.('retry-after');
+  const secs = Number(raw);
+  return Number.isFinite(secs) && secs > 0 ? Math.min(secs * 1000, 8_000) : null;
+}
+
+/**
  * One request, with backoff.
  *
- * The public endpoint is rate limited — hit it too fast and the request does
- * not come back with an error code, it fails outright. Every call therefore
- * backs off and tries again rather than tearing the whole page down.
+ * The public endpoint is rate limited — hit it too fast and the request either
+ * comes back 429 or fails outright. Every call therefore backs off and tries
+ * again rather than tearing the whole page down.
  */
 async function send(body: unknown, io: Io): Promise<unknown> {
   const direct = io.rpcUrl ?? RPC_URL;
   const f: Fetcher = io.fetcher ?? ((u, i) => fetch(u, i));
-  const tries = io.retries ?? 3;
+  const tries = io.retries ?? BACKOFF_MS.length;
   // Direct first, every time. The fallback is only reached once the endpoint
   // has refused three times in a row, and it is dropped again on the next call.
   const routes = io.rpcUrl || io.fetcher ? [direct] : [direct, RPC_FALLBACK];
@@ -99,11 +132,15 @@ async function send(body: unknown, io: Io): Promise<unknown> {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
+        if (res.status === 429) throw new Throttled(retryAfterMs(res));
         if (!res.ok) throw new Error(`rpc ${res.status}`);
         return await res.json();
       } catch (err) {
         last = err;
-        if (attempt < tries - 1) await wait(500 * (attempt + 1));
+        if (attempt < tries - 1) {
+          const asked = err instanceof Throttled ? err.waitMs : null;
+          await wait(asked ?? BACKOFF_MS[attempt] ?? 5_000);
+        }
       }
     }
   }

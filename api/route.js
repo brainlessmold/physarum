@@ -178,6 +178,24 @@ function readReserves(hex) {
     return [readUint(hex, 0), readUint(hex, 1)];
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/** A 429, carrying what the endpoint asked us to wait when it said. */
+class Throttled extends Error {
+    constructor(waitMs) {
+        super('rpc 429');
+        this.waitMs = waitMs;
+    }
+}
+/**
+ * How long to wait before each further attempt. The public endpoint throttles a
+ * datacenter address far harder than a browser, so the waits grow into seconds.
+ */
+const BACKOFF_MS = [600, 1500, 3000, 5000];
+/** Whatever Retry-After says, in ms, if it says anything usable. */
+function retryAfterMs(res) {
+    const raw = res.headers?.get?.('retry-after');
+    const secs = Number(raw);
+    return Number.isFinite(secs) && secs > 0 ? Math.min(secs * 1000, 8000) : null;
+}
 /**
  * One request, with backoff.
  *
@@ -188,7 +206,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function send(body, io) {
     const direct = io.rpcUrl ?? RPC_URL;
     const f = io.fetcher ?? ((u, i) => fetch(u, i));
-    const tries = io.retries ?? 3;
+    const tries = io.retries ?? BACKOFF_MS.length;
     // Direct first, every time. The fallback is only reached once the endpoint
     // has refused three times in a row, and it is dropped again on the next call.
     const routes = io.rpcUrl || io.fetcher ? [direct] : [direct, RPC_FALLBACK];
@@ -201,14 +219,18 @@ async function send(body, io) {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
                 });
+                if (res.status === 429)
+                    throw new Throttled(retryAfterMs(res));
                 if (!res.ok)
                     throw new Error(`rpc ${res.status}`);
                 return await res.json();
             }
             catch (err) {
                 last = err;
-                if (attempt < tries - 1)
-                    await wait(500 * (attempt + 1));
+                if (attempt < tries - 1) {
+                    const asked = err instanceof Throttled ? err.waitMs : null;
+                    await wait(asked ?? BACKOFF_MS[attempt] ?? 5000);
+                }
             }
         }
     }
@@ -1384,17 +1406,38 @@ function planRoute(pools, from, to, tradeSizeUsd, options = {}) {
 // the test suite runs straight from source through node's type stripping, which
 // requires them. The node runtime bundles with esbuild, which resolves both
 // spellings. Web Request and Response work here just the same.
-const MAX_AGE_MS = 8_000;
+// Seconds was the wrong number: reading every pool is a few dozen round trips,
+// and the public RPC throttles this address far harder than a visitor's browser.
+// The snapshot is held for minutes and its exact age is in every answer.
+const MAX_AGE_MS = 300_000;
 let cached = null;
+// Two requests arriving together must not both go and read the chain — that
+// burst is precisely what gets throttled. They share one read instead.
+let inFlight = null;
 async function snapshot() {
     const now = Date.now();
     if (cached && now - cached.at < MAX_AGE_MS) {
-        return { snapshot: cached.snapshot, ageMs: now - cached.at };
+        return { snapshot: cached.snapshot, ageMs: now - cached.at, stale: false };
     }
-    // Server side there is no CORS to work around, so the chain is read directly.
-    const fresh = await fetchLivePools({ rpcUrl: RPC_URL });
-    cached = { at: now, snapshot: fresh };
-    return { snapshot: fresh, ageMs: 0 };
+    if (!inFlight) {
+        // Server side there is no CORS to work around, so the chain is read
+        // directly, and more slowly than a browser would.
+        inFlight = fetchLivePools({ rpcUrl: RPC_URL, pauseMs: 400 }).finally(() => {
+            inFlight = null;
+        });
+    }
+    try {
+        const fresh = await inFlight;
+        cached = { at: Date.now(), snapshot: fresh };
+        return { snapshot: fresh, ageMs: 0, stale: false };
+    }
+    catch (err) {
+        // A refusal now is not a reason to have nothing to say. The last good
+        // snapshot is returned with its real age and marked stale.
+        if (cached)
+            return { snapshot: cached.snapshot, ageMs: Date.now() - cached.at, stale: true };
+        throw err;
+    }
 }
 const HEADERS = {
     'content-type': 'application/json',
@@ -1449,8 +1492,9 @@ async function respond(req) {
     }
     let snap;
     let ageMs;
+    let stale;
     try {
-        ({ snapshot: snap, ageMs } = await snapshot());
+        ({ snapshot: snap, ageMs, stale } = await snapshot());
     }
     catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
@@ -1479,6 +1523,7 @@ async function respond(req) {
         tradeSizeUsd: size,
         block: snap.blockNumber,
         snapshotAgeMs: ageMs,
+        snapshotStale: stale,
         ...plan,
         disclaimer: 'A quote is true for its block and nothing more. Re-check against the pool before swapping.',
     });
