@@ -138,10 +138,82 @@ function requestUrl(req: { url?: string; headers?: Record<string, unknown> }): U
   return new URL(raw, `https://${host}`);
 }
 
+/**
+ * What the chain will and will not answer from inside this function.
+ *
+ * The first deploy answered `rpc 429` and nothing else, while the very same
+ * requests — one call, a batch of forty, a three-million-block log query — all
+ * returned 200 when sent from the edge function next door and from a browser.
+ * So the refusal is specific to this function's egress, and guessing which
+ * request crosses the line is worse than asking. `?probe=1` sends the three
+ * shapes one at a time and reports what came back.
+ */
+async function probe(): Promise<Answer> {
+  const attempt = async (label: string, body: unknown) => {
+    const began = Date.now();
+    try {
+      const res = await fetch(chain.RPC_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      return { label, status: res.status, ms: Date.now() - began, body: text.slice(0, 160) };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return { label, status: null, ms: Date.now() - began, body: `threw: ${detail}` };
+    }
+  };
+
+  const WETH = '0x0bd7d308f8e1639fab988df18a8011f41eacad73';
+  const single = { jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] };
+  const batch = Array.from({ length: 40 }, (_, i) => ({
+    jsonrpc: '2.0',
+    id: i,
+    method: 'eth_call',
+    params: [{ to: WETH, data: '0x313ce567' }, 'latest'],
+  }));
+
+  const head = await attempt('eth_blockNumber', single);
+  const forty = await attempt('batch of 40 eth_call', batch);
+
+  let logs: unknown = { label: 'eth_getLogs over 3M blocks', skipped: 'no head to count back from' };
+  try {
+    const parsed = JSON.parse(head.body) as { result?: string };
+    if (parsed.result) {
+      const from = Number(BigInt(parsed.result)) - 3_000_000;
+      logs = await attempt('eth_getLogs over 3M blocks', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_getLogs',
+        params: [
+          {
+            address: '0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f',
+            topics: [
+              '0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9',
+              '0x' + WETH.slice(2).padStart(64, '0'),
+            ],
+            fromBlock: '0x' + from.toString(16),
+            toBlock: 'latest',
+          },
+        ],
+      });
+    }
+  } catch {
+    /* head.body was not json; the skipped note above stands */
+  }
+
+  return json({
+    probe: 'sent straight from this function, one request at a time, no retries',
+    results: [head, forty, logs],
+  });
+}
+
 async function respond(
   req: Request | { url?: string; headers?: Record<string, string | string[] | undefined> },
 ): Promise<Answer> {
   const url = requestUrl(req as { url?: string; headers?: Record<string, unknown> });
+  if (url.searchParams.get('probe')) return probe();
   const size = Number(url.searchParams.get('size') ?? 10_000);
   if (!isFinite(size) || size <= 0) {
     return json({ error: 'size must be a positive number of dollars' }, 400);

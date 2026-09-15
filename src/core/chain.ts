@@ -148,6 +148,10 @@ export interface ScanOptions {
   windowBlocks?: number;
   rpcUrl?: string;
   fetcher?: Fetcher;
+  /** Passed through to the transport: how long to wait between batches. */
+  pauseMs?: number;
+  /** Passed through to the transport: attempts per request. */
+  retries?: number;
 }
 
 /**
@@ -279,7 +283,15 @@ export async function fetchLivePools(options: ScanOptions = {}): Promise<LiveSna
   const minUsd = options.minUsd ?? 2_000;
   const perHub = options.perHub ?? 4;
   const windowBlocks = options.windowBlocks ?? LOG_WINDOW_BLOCKS;
-  const io: Io = { rpcUrl: options.rpcUrl, fetcher: options.fetcher };
+  // Pacing has to travel with the transport options, not be dropped here: the
+  // server reads the chain more slowly than a browser does, and for a while it
+  // was asking for that politely and being ignored.
+  const io: Io = {
+    rpcUrl: options.rpcUrl,
+    fetcher: options.fetcher,
+    pauseMs: options.pauseMs,
+    retries: options.retries,
+  };
 
   const hubUsd = await fetchHubPrices(io);
   const headHex = await rpc<string>('eth_blockNumber', [], io);

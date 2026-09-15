@@ -1148,7 +1148,13 @@ async function fetchLivePools(options = {}) {
     const minUsd = options.minUsd ?? 2_000;
     const perHub = options.perHub ?? 4;
     const windowBlocks = options.windowBlocks ?? LOG_WINDOW_BLOCKS;
-    const io = { rpcUrl: options.rpcUrl, fetcher: options.fetcher };
+    // Pacing has to travel with the transport options, not be dropped here.
+    const io = {
+        rpcUrl: options.rpcUrl,
+        fetcher: options.fetcher,
+        pauseMs: options.pauseMs,
+        retries: options.retries,
+    };
     const hubUsd = await fetchHubPrices(io);
     const headHex = await rpc('eth_blockNumber', [], io);
     const head = Number(BigInt(headHex));
@@ -1484,8 +1490,73 @@ function requestUrl(req) {
     const host = req.headers?.host ?? 'localhost';
     return new URL(raw, `https://${host}`);
 }
+/**
+ * What the chain will and will not answer from inside this function. The same
+ * requests all return 200 from the edge function next door and from a browser,
+ * so `?probe=1` asks from here rather than guessing.
+ */
+async function probe() {
+    const attempt = async (label, body) => {
+        const began = Date.now();
+        try {
+            const res = await fetch(RPC_URL, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const text = await res.text();
+            return { label, status: res.status, ms: Date.now() - began, body: text.slice(0, 160) };
+        }
+        catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            return { label, status: null, ms: Date.now() - began, body: `threw: ${detail}` };
+        }
+    };
+    const WETH = '0x0bd7d308f8e1639fab988df18a8011f41eacad73';
+    const single = { jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] };
+    const batch = Array.from({ length: 40 }, (_, i) => ({
+        jsonrpc: '2.0',
+        id: i,
+        method: 'eth_call',
+        params: [{ to: WETH, data: '0x313ce567' }, 'latest'],
+    }));
+    const head = await attempt('eth_blockNumber', single);
+    const forty = await attempt('batch of 40 eth_call', batch);
+    let logs = { label: 'eth_getLogs over 3M blocks', skipped: 'no head to count back from' };
+    try {
+        const parsed = JSON.parse(head.body);
+        if (parsed.result) {
+            const from = Number(BigInt(parsed.result)) - 3_000_000;
+            logs = await attempt('eth_getLogs over 3M blocks', {
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'eth_getLogs',
+                params: [
+                    {
+                        address: '0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f',
+                        topics: [
+                            '0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9',
+                            '0x' + WETH.slice(2).padStart(64, '0'),
+                        ],
+                        fromBlock: '0x' + from.toString(16),
+                        toBlock: 'latest',
+                    },
+                ],
+            });
+        }
+    }
+    catch {
+        /* head.body was not json; the skipped note above stands */
+    }
+    return json({
+        probe: 'sent straight from this function, one request at a time, no retries',
+        results: [head, forty, logs],
+    });
+}
 async function respond(req) {
     const url = requestUrl(req);
+    if (url.searchParams.get('probe'))
+        return probe();
     const size = Number(url.searchParams.get('size') ?? 10_000);
     if (!isFinite(size) || size <= 0) {
         return json({ error: 'size must be a positive number of dollars' }, 400);
