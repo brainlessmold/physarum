@@ -7,6 +7,12 @@
  * with nothing to resolve.
  *
  * esbuild is already here — vite brings it — so this adds no dependency.
+ *
+ * The result is committed rather than ignored, because Vercel decides what is a
+ * function from the files in the repository, not from what a build leaves
+ * behind: generated into an ignored path, it is simply never served. Every
+ * build overwrites it, so run `npm run build` after touching anything under
+ * src/core or server/ and commit what changes.
  */
 import { build } from 'esbuild';
 import { mkdir } from 'node:fs/promises';
