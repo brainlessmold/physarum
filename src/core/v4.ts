@@ -22,7 +22,7 @@
  * Addresses from github.com/Uniswap/contracts, deployments/4663.md.
  */
 
-import { ethCallBatch, rpc, type Call, type Io } from './chain.ts';
+import { ethCallBatch, rpc, type Call, type Io } from './rpc.ts';
 
 export const POOL_MANAGER = '0x8366a39cc670b4001a1121b8f6a443a643e40951';
 export const V4_QUOTER = '0x8dc178efb8111bb0973dd9d722ebeff267c98f94';

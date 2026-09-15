@@ -44,18 +44,62 @@ async function snapshot(): Promise<{ snapshot: LiveSnapshot; ageMs: number }> {
   return { snapshot: fresh, ageMs: 0 };
 }
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body, null, 2), {
-    status,
-    headers: {
-      'content-type': 'application/json',
-      'access-control-allow-origin': '*',
-      'cache-control': 'no-store',
-    },
-  });
+const HEADERS: Record<string, string> = {
+  'content-type': 'application/json',
+  'access-control-allow-origin': '*',
+  'cache-control': 'no-store',
+};
 
-export default async function handler(req: Request): Promise<Response> {
-  const url = new URL(req.url);
+interface Answer {
+  status: number;
+  body: unknown;
+}
+const json = (body: unknown, status = 200): Answer => ({ status, body });
+
+/** The node runtime's response object, as much of it as is used here. */
+interface NodeResponse {
+  statusCode: number;
+  setHeader(name: string, value: string): void;
+  end(chunk: string): void;
+}
+
+/**
+ * Two calling conventions.
+ *
+ * Vercel hands a function either a Web Request and expects a Response back, or
+ * a node request and response pair. Which one depends on the runtime and on the
+ * project, and guessing wrong fails the call instantly with nothing useful in
+ * the log. So this answers to both: the work happens once, and only the last
+ * step differs.
+ */
+export default async function handler(
+  req: Request | { url?: string; headers?: Record<string, string | string[] | undefined> },
+  res?: NodeResponse,
+): Promise<Response | void> {
+  const answer = await respond(req);
+  if (res && typeof res.end === 'function') {
+    res.statusCode = answer.status;
+    for (const [k, v] of Object.entries(HEADERS)) res.setHeader(k, v);
+    res.end(JSON.stringify(answer.body, null, 2));
+    return;
+  }
+  return new Response(JSON.stringify(answer.body, null, 2), {
+    status: answer.status,
+    headers: HEADERS,
+  });
+}
+
+function requestUrl(req: { url?: string; headers?: Record<string, unknown> }): URL {
+  const raw = typeof req.url === 'string' ? req.url : '/';
+  if (/^https?:\/\//.test(raw)) return new URL(raw);
+  const host = (req.headers as Record<string, string> | undefined)?.host ?? 'localhost';
+  return new URL(raw, `https://${host}`);
+}
+
+async function respond(
+  req: Request | { url?: string; headers?: Record<string, string | string[] | undefined> },
+): Promise<Answer> {
+  const url = requestUrl(req as { url?: string; headers?: Record<string, unknown> });
   const size = Number(url.searchParams.get('size') ?? 10_000);
   if (!isFinite(size) || size <= 0) {
     return json({ error: 'size must be a positive number of dollars' }, 400);

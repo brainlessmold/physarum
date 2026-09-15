@@ -28,7 +28,7 @@
  * Addresses from github.com/Uniswap/contracts, deployments/4663.md.
  */
 
-import { ethCallBatch, type Call, type Io } from './chain.ts';
+import { ethCallBatch, type Call, type Io } from './rpc.ts';
 
 export const V3_FACTORY = '0x1f7d7550b1b028f7571e69a784071f0205fd2efa';
 export const QUOTER_V2 = '0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7';
