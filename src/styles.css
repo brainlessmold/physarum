@@ -587,6 +587,42 @@ button.ghost:hover {
   max-width: 74ch;
 }
 
+.tokenstats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  margin: 14px 0 0;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.tokenstats > div {
+  background: var(--panel);
+  padding: 14px 16px 16px;
+}
+
+.tokenstats dt {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tokenstats dd {
+  margin: 6px 0 0;
+  font-family: var(--f-mono);
+  font-size: 22px;
+  color: var(--ink);
+}
+
+.tokenstats dd small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--live);
+}
+
 .feed {
   margin-top: 12px !important;
   padding-left: 12px;

@@ -3,7 +3,8 @@ import { buildGraph, generateMaze, mazeEndpoints } from './core/graph.ts';
 import { shortestPath } from './core/dijkstra.ts';
 import { KANTO, project, nearestNeighbourEdges } from './data/kanto.ts';
 import { buildPoolGraph, defaultEnds, EXAMPLE_POOLS, poolCost } from './core/pools.ts';
-import { fetchLivePools, toPools, type LiveSnapshot } from './core/chain.ts';
+import { fetchHubPrices, fetchLivePools, toPools, type LiveSnapshot } from './core/chain.ts';
+import { fetchTokenMarket, type TokenMarket } from './core/v4.ts';
 import { SimCanvas, type SimStats } from './SimCanvas.tsx';
 import { Sim3D, type Sim3DStats } from './Sim3D.tsx';
 
@@ -253,6 +254,89 @@ function MazeLab() {
   );
 }
 
+/**
+ * What the token is doing, read the same way as everything else on this page.
+ *
+ * It trades on Uniswap V4, where a pool is not a contract and has no reserves
+ * to read — so the price here is a quote: a small trade simulated through the
+ * pool that gives the most. One of its pools runs a hook, and a hook can change
+ * the price on the way through, which is exactly why nothing but a quote will do.
+ */
+function TokenPanel() {
+  const [market, setMarket] = useState<TokenMarket | null>(null);
+  const [state, setState] = useState<'loading' | 'live' | 'offline'>('loading');
+
+  useEffect(() => {
+    if (!CONTRACT) return;
+    let cancelled = false;
+    fetchHubPrices()
+      .then((hubs) => fetchTokenMarket(CONTRACT!, { ethUsd: hubs['WETH'] ?? 0 }))
+      .then((m) => {
+        if (cancelled) return;
+        if (!m.priceUsd) {
+          setState('offline');
+          return;
+        }
+        setMarket(m);
+        setState('live');
+      })
+      .catch(() => {
+        if (!cancelled) setState('offline');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!CONTRACT) return null;
+  if (state !== 'live' || !market || !market.priceUsd) {
+    return (
+      <p className="feed">
+        {state === 'loading'
+          ? 'Reading the token from its own pools…'
+          : 'The chain did not answer for the token just now. The address above is still the address.'}
+      </p>
+    );
+  }
+
+  const price = market.priceUsd;
+  const cap = price * 1_000_000_000;
+  const digits = price < 0.01 ? 7 : 4;
+
+  return (
+    <>
+      <dl className="tokenstats">
+        <div>
+          <dt>price</dt>
+          <dd>${price.toFixed(digits)}</dd>
+        </div>
+        <div>
+          <dt>supply · 1,000,000,000</dt>
+          <dd>${Math.round(cap).toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt>pools on Uniswap V4</dt>
+          <dd>
+            {market.pools}
+            {market.hooked > 0 ? <small>{market.hooked} with a hook</small> : null}
+          </dd>
+        </div>
+        <div>
+          <dt>fee of the best pool</dt>
+          <dd>{(((market.best?.fee ?? 0) / 10_000)).toFixed(2)}%</dd>
+        </div>
+      </dl>
+      <p className="feed feed-live">
+        <b>Quoted, not looked up.</b> A V4 pool is not a contract and has no reserves to read — it
+        lives inside the PoolManager, keyed by a hash. So this price is ${market.probeUsd} of ETH
+        put through every pool the token has, taking whichever gives the most back. One of them runs
+        a hook, which is arbitrary code on every swap, and nothing computed from pool state would
+        survive that.
+      </p>
+    </>
+  );
+}
+
 type FeedState = 'loading' | 'live' | 'offline';
 
 function PoolsLab() {
@@ -313,8 +397,9 @@ function PoolsLab() {
       <div className="lab-head">
         <p>
           The same organism on a graph of liquidity pools. Nodes are tokens, edge length is what a
-          swap through that pool actually costs — fee plus slippage. Shortest path is therefore the
-          cheapest route.
+          swap through that pool actually costs. Constant-product pools are solved from their
+          reserves; V3 and V4 pools are asked directly, because a pool with a hook can only be
+          priced by running it. Shortest path is therefore the cheapest route.
         </p>
         <p className={`feed feed-${feed}`}>
           {feed === 'live' && snapshot ? (
@@ -472,6 +557,14 @@ const REAL: Array<[string, string]> = [
     'It runs in this tab. Nothing here is a recording, a replay or a video — the linear system is being solved in your browser, sixty times a second.',
   ],
   ['The coordinates', 'Real latitudes and longitudes of thirty-six cities in the Kanto region.'],
+  [
+    'The pools',
+    'Live. Found from the factories\u2019 own events, then read pool by pool over the public RPC from this tab. Nothing is precomputed and no indexer is involved.',
+  ],
+  [
+    'The costs',
+    'Constant-product hops are solved exactly from reserves. V3 and V4 hops are quoted by their own quoters, which simulate the swap against current state \u2014 hooks included.',
+  ],
   ['The code', 'Open in full under MIT. Clone it, run the tests, change the parameters.'],
 ];
 
@@ -493,8 +586,12 @@ const NOT_REAL: Array<[string, string]> = [
     "Those are the paper authors' measurements of the real organism against the real railway. They are not our numbers.",
   ],
   [
-    'The pool data',
-    'The pools on the Pools panel are an illustrative example with plausible figures, not live chain data.',
+    'A quote is not a guarantee',
+    'Every cost here is what the pool would have given at the block it was read. Blocks move, and so does the answer. Nothing on this page should be the last thing you check before a swap.',
+  ],
+  [
+    'Venues are not arbitraged against each other',
+    'Two pools of the same pair can sit at different prices. Each is measured against its own marginal price, so a pool that is simply priced worse does not look more expensive here. A real router would take that difference; this one does not.',
   ],
   [
     'The body at the top is not a scan',
@@ -521,8 +618,8 @@ const PLAN: Array<[string, string, string, 'done' | 'now' | 'next']> = [
     'Every hop also quoted on Uniswap V3 through QuoterV2 — a simulated swap, not a formula',
     'done',
   ],
-  ['08', 'Uniswap V4', 'The same, through the V4 quoter and its singleton pools', 'now'],
-  ['09', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'next'],
+  ['08', 'Uniswap V4', 'Pools found from Initialize events, priced through the V4 quoter, hooks and all', 'done'],
+  ['09', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'now'],
 ];
 
 export function Site() {
@@ -624,6 +721,7 @@ export function Site() {
               </button>
             ) : null}
           </div>
+          <TokenPanel />
         </section>
 
         <section id="what">

@@ -21,7 +21,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types test/solver.test.ts && node --experimental-strip-types test/network.test.ts && node --experimental-strip-types test/chain.test.ts && node --experimental-strip-types test/v3.test.ts"
+    "test": "node --experimental-strip-types test/solver.test.ts && node --experimental-strip-types test/network.test.ts && node --experimental-strip-types test/chain.test.ts && node --experimental-strip-types test/v3.test.ts && node --experimental-strip-types test/v4.test.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
