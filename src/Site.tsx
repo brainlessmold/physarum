@@ -341,6 +341,86 @@ function TokenPanel() {
   );
 }
 
+/**
+ * The endpoint, answering for itself.
+ *
+ * A page that says "there is an API" is a claim. A page that calls it in front
+ * of you and prints what came back is not.
+ */
+function EndpointPanel() {
+  const [answer, setAnswer] = useState<Record<string, unknown> | null>(null);
+  const [state, setState] = useState<'loading' | 'live' | 'offline'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/route')
+      .then((r) => r.json())
+      .then((index: { tokens?: string[] }) => {
+        const tokens = index.tokens ?? [];
+        const leaves = tokens.filter((t) => !['WETH', 'USDG', 'VIRTUAL'].includes(t));
+        const from = leaves[0] ?? tokens[0];
+        const to = leaves[leaves.length - 1] ?? tokens[1];
+        if (!from || !to || from === to) throw new Error('not enough tokens');
+        return fetch(`/api/route?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&size=10000`).then((r) =>
+          r.json(),
+        );
+      })
+      .then((a) => {
+        if (cancelled) return;
+        setAnswer(a);
+        setState('live');
+      })
+      .catch(() => {
+        if (!cancelled) setState('offline');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const route = Array.isArray(answer?.route) ? (answer!.route as string[]) : null;
+  const hops = Array.isArray(answer?.hops) ? (answer!.hops as Array<Record<string, unknown>>) : [];
+
+  return (
+    <div className="endpoint">
+      <code className="url">/api/route?from=WETH&amp;to=USDG&amp;size=10000</code>
+      {state === 'live' && route ? (
+        <>
+          <div className="strip">
+            <span>
+              route <b>{route.join(' → ')}</b>
+            </span>
+            <span>
+              cost <b>{String(answer?.costPct ?? '—')}%</b>
+            </span>
+            <span>
+              block <b>{Number(answer?.block ?? 0).toLocaleString('en-US')}</b>
+            </span>
+            <span className={answer?.agree ? 'agree' : 'disagree'}>
+              {answer?.agree ? 'matches Dijkstra' : 'does not match Dijkstra'}
+            </span>
+          </div>
+          <ul className="hops">
+            {hops.map((h, i) => (
+              <li key={i}>
+                <span>
+                  {String(h.from)} → {String(h.to)}
+                </span>
+                <span>{String(h.costPct)}%</span>
+                <small>{h.quoted ? `${String(h.venue)} quoter` : 'constant product'}</small>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="feed">
+          {state === 'loading' ? 'Calling it now…' : 'The endpoint did not answer just now.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 type FeedState = 'loading' | 'live' | 'offline';
 
 function PoolsLab() {
@@ -623,7 +703,7 @@ const PLAN: Array<[string, string, string, 'done' | 'now' | 'next']> = [
     'done',
   ],
   ['08', 'Uniswap V4', 'Pools found from Initialize events, priced through the V4 quoter, hooks and all', 'done'],
-  ['09', 'Routing endpoint', 'The surviving network served as a quote for any pair', 'now'],
+  ['09', 'Routing endpoint', 'Live at /api/route — any pair, any size, with Dijkstra returned beside it', 'done'],
 ];
 
 export function Site() {
@@ -888,6 +968,19 @@ export function Site() {
               </dl>
             </div>
           </div>
+        </section>
+
+        <section id="api">
+          <p className="kicker">Ask it yourself</p>
+          <h2>The mould, as an endpoint.</h2>
+          <p>
+            Two tokens and a trade size in, the surviving route out. It reads the chain, runs the
+            model until the network stops changing, and answers. Dijkstra&rsquo;s result is returned
+            alongside, with a flag saying whether the two agree — the model is proven to converge on
+            the shortest path, so a disagreement would mean this endpoint is wrong, and it says so
+            itself rather than waiting to be caught. The call below was made when this page loaded.
+          </p>
+          <EndpointPanel />
         </section>
 
         <section id="plan">
