@@ -20,15 +20,13 @@
  * make the endpoint unusable. The age of the snapshot is in every answer, so
  * nobody has to take its freshness on trust.
  */
-export const config = { runtime: 'edge' };
-
-// No .ts on these two on purpose. Vercel scans the entry file of an edge
-// function before bundling it and rejects a specifier ending in .ts outright:
-//   The Edge Function "api/route" is referencing unsupported modules
-// Extensionless, the same files resolve, and everything they import in turn is
-// left alone because by then it is the bundler's problem, not the scanner's.
-import { fetchLivePools, toPools, RPC_URL, type LiveSnapshot } from '../src/core/chain';
-import { planRoute } from '../src/core/route';
+// Deliberately NOT an edge function. Edge rejects any module specifier ending
+// in .ts anywhere in the graph, and this project writes them everywhere because
+// the test suite runs straight from source through node's type stripping, which
+// requires them. The node runtime bundles with esbuild, which resolves both
+// spellings. Web Request and Response work here just the same.
+import { fetchLivePools, toPools, RPC_URL, type LiveSnapshot } from '../src/core/chain.ts';
+import { planRoute } from '../src/core/route.ts';
 
 /** Server side there is no CORS to work around, so the chain is read directly. */
 const io = { rpcUrl: RPC_URL };
