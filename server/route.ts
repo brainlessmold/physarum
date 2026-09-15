@@ -22,6 +22,13 @@
  * a disagreement means this endpoint is wrong — and it says so itself rather
  * than waiting to be caught.
  *
+ * The chain is not read directly from here. A single eth_blockNumber sent from
+ * this function comes back 429, every time, while the same request from the
+ * edge function in api/rpc.ts comes back 200 — the throttling is on this
+ * function's egress address, not on the query, the batch size or the project.
+ * So the reads go out through that pass-through, which is already deployed,
+ * already read-only, and already proven to be answered.
+ *
  * And the pool snapshot is held between calls rather than read per request.
  * Reading every pool is a few dozen round trips to the chain, and the public
  * RPC throttles this address hard enough that doing it per request simply does
@@ -52,16 +59,20 @@ let cached: { at: number; snapshot: LiveSnapshot } | null = null;
  *  burst is precisely what gets throttled. They share one read instead. */
 let inFlight: Promise<LiveSnapshot> | null = null;
 
-async function snapshot(): Promise<{ snapshot: LiveSnapshot; ageMs: number; stale: boolean }> {
+async function snapshot(
+  origin: string,
+): Promise<{ snapshot: LiveSnapshot; ageMs: number; stale: boolean }> {
   const now = Date.now();
   if (cached && now - cached.at < MAX_AGE_MS) {
     return { snapshot: cached.snapshot, ageMs: now - cached.at, stale: false };
   }
   if (!inFlight) {
-    // Server side there is no CORS to work around, so the chain is read
-    // directly, and more slowly than a browser would.
+    // Out through our own edge pass-through rather than straight at the chain,
+    // for the reason at the top of this file. It forwards the body untouched
+    // and refuses anything that is not a read, so nothing is given up by using
+    // it, and it is answered where a direct call is not.
     inFlight = chain
-      .fetchLivePools({ rpcUrl: chain.RPC_URL, pauseMs: 400 })
+      .fetchLivePools({ rpcUrl: `${origin}/api/rpc`, pauseMs: 250 })
       .finally(() => {
         inFlight = null;
       });
@@ -148,11 +159,11 @@ function requestUrl(req: { url?: string; headers?: Record<string, unknown> }): U
  * request crosses the line is worse than asking. `?probe=1` sends the three
  * shapes one at a time and reports what came back.
  */
-async function probe(): Promise<Answer> {
-  const attempt = async (label: string, body: unknown) => {
+async function probe(origin: string): Promise<Answer> {
+  const attempt = async (label: string, url: string, body: unknown) => {
     const began = Date.now();
     try {
-      const res = await fetch(chain.RPC_URL, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -174,15 +185,18 @@ async function probe(): Promise<Answer> {
     params: [{ to: WETH, data: '0x313ce567' }, 'latest'],
   }));
 
-  const head = await attempt('eth_blockNumber', single);
-  const forty = await attempt('batch of 40 eth_call', batch);
+  const edge = `${origin}/api/rpc`;
+  const head = await attempt('direct: eth_blockNumber', chain.RPC_URL, single);
+  const forty = await attempt('direct: batch of 40 eth_call', chain.RPC_URL, batch);
+  const viaEdge = await attempt('through /api/rpc: eth_blockNumber', edge, single);
+  const viaEdgeBatch = await attempt('through /api/rpc: batch of 40 eth_call', edge, batch);
 
-  let logs: unknown = { label: 'eth_getLogs over 3M blocks', skipped: 'no head to count back from' };
+  let logs: unknown = { label: 'through /api/rpc: eth_getLogs over 3M blocks', skipped: 'no head to count back from' };
   try {
-    const parsed = JSON.parse(head.body) as { result?: string };
+    const parsed = JSON.parse(viaEdge.body) as { result?: string };
     if (parsed.result) {
       const from = Number(BigInt(parsed.result)) - 3_000_000;
-      logs = await attempt('eth_getLogs over 3M blocks', {
+      logs = await attempt('through /api/rpc: eth_getLogs over 3M blocks', edge, {
         jsonrpc: '2.0',
         id: 1,
         method: 'eth_getLogs',
@@ -204,8 +218,8 @@ async function probe(): Promise<Answer> {
   }
 
   return json({
-    probe: 'sent straight from this function, one request at a time, no retries',
-    results: [head, forty, logs],
+    probe: 'sent from inside this function, one request at a time, no retries',
+    results: [head, forty, viaEdge, viaEdgeBatch, logs],
   });
 }
 
@@ -213,7 +227,7 @@ async function respond(
   req: Request | { url?: string; headers?: Record<string, string | string[] | undefined> },
 ): Promise<Answer> {
   const url = requestUrl(req as { url?: string; headers?: Record<string, unknown> });
-  if (url.searchParams.get('probe')) return probe();
+  if (url.searchParams.get('probe')) return probe(url.origin);
   const size = Number(url.searchParams.get('size') ?? 10_000);
   if (!isFinite(size) || size <= 0) {
     return json({ error: 'size must be a positive number of dollars' }, 400);
@@ -223,7 +237,7 @@ async function respond(
   let ageMs: number;
   let stale: boolean;
   try {
-    ({ snapshot: snap, ageMs, stale } = await snapshot());
+    ({ snapshot: snap, ageMs, stale } = await snapshot(url.origin));
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return json({ error: 'the chain did not answer', detail }, 502);

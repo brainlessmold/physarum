@@ -1420,15 +1420,19 @@ let cached = null;
 // Two requests arriving together must not both go and read the chain — that
 // burst is precisely what gets throttled. They share one read instead.
 let inFlight = null;
-async function snapshot() {
+// The chain is not read directly from here. A single eth_blockNumber sent from
+// this function comes back 429 every time, while the same request from the edge
+// function in api/rpc.ts comes back 200 — the throttling is on this function's
+// egress address, not on the query or the batch size. So the reads go out
+// through that pass-through, which forwards the body untouched and refuses
+// anything that is not a read.
+async function snapshot(origin) {
     const now = Date.now();
     if (cached && now - cached.at < MAX_AGE_MS) {
         return { snapshot: cached.snapshot, ageMs: now - cached.at, stale: false };
     }
     if (!inFlight) {
-        // Server side there is no CORS to work around, so the chain is read
-        // directly, and more slowly than a browser would.
-        inFlight = fetchLivePools({ rpcUrl: RPC_URL, pauseMs: 400 }).finally(() => {
+        inFlight = fetchLivePools({ rpcUrl: `${origin}/api/rpc`, pauseMs: 250 }).finally(() => {
             inFlight = null;
         });
     }
@@ -1495,11 +1499,11 @@ function requestUrl(req) {
  * requests all return 200 from the edge function next door and from a browser,
  * so `?probe=1` asks from here rather than guessing.
  */
-async function probe() {
-    const attempt = async (label, body) => {
+async function probe(origin) {
+    const attempt = async (label, url, body) => {
         const began = Date.now();
         try {
-            const res = await fetch(RPC_URL, {
+            const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(body),
@@ -1520,14 +1524,17 @@ async function probe() {
         method: 'eth_call',
         params: [{ to: WETH, data: '0x313ce567' }, 'latest'],
     }));
-    const head = await attempt('eth_blockNumber', single);
-    const forty = await attempt('batch of 40 eth_call', batch);
-    let logs = { label: 'eth_getLogs over 3M blocks', skipped: 'no head to count back from' };
+    const edge = `${origin}/api/rpc`;
+    const head = await attempt('direct: eth_blockNumber', RPC_URL, single);
+    const forty = await attempt('direct: batch of 40 eth_call', RPC_URL, batch);
+    const viaEdge = await attempt('through /api/rpc: eth_blockNumber', edge, single);
+    const viaEdgeBatch = await attempt('through /api/rpc: batch of 40 eth_call', edge, batch);
+    let logs = { label: 'through /api/rpc: eth_getLogs over 3M blocks', skipped: 'no head to count back from' };
     try {
-        const parsed = JSON.parse(head.body);
+        const parsed = JSON.parse(viaEdge.body);
         if (parsed.result) {
             const from = Number(BigInt(parsed.result)) - 3_000_000;
-            logs = await attempt('eth_getLogs over 3M blocks', {
+            logs = await attempt('through /api/rpc: eth_getLogs over 3M blocks', edge, {
                 jsonrpc: '2.0',
                 id: 1,
                 method: 'eth_getLogs',
@@ -1549,14 +1556,14 @@ async function probe() {
         /* head.body was not json; the skipped note above stands */
     }
     return json({
-        probe: 'sent straight from this function, one request at a time, no retries',
-        results: [head, forty, logs],
+        probe: 'sent from inside this function, one request at a time, no retries',
+        results: [head, forty, viaEdge, viaEdgeBatch, logs],
     });
 }
 async function respond(req) {
     const url = requestUrl(req);
     if (url.searchParams.get('probe'))
-        return probe();
+        return probe(url.origin);
     const size = Number(url.searchParams.get('size') ?? 10_000);
     if (!isFinite(size) || size <= 0) {
         return json({ error: 'size must be a positive number of dollars' }, 400);
@@ -1565,7 +1572,7 @@ async function respond(req) {
     let ageMs;
     let stale;
     try {
-        ({ snapshot: snap, ageMs, stale } = await snapshot());
+        ({ snapshot: snap, ageMs, stale } = await snapshot(url.origin));
     }
     catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
